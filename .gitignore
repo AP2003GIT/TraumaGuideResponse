@@ -10,6 +10,9 @@
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+**/data/
+**/*.sqlite
+**/*.sqlite3
 
 # Node
 **/node_modules/

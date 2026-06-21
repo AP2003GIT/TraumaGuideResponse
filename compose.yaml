@@ -47,6 +47,30 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  save-service:
+    build:
+      context: ./save-service
+    environment:
+      CHAT_STORAGE_PATH: /data/chats.sqlite3
+      CHAT_RETENTION_DAYS: ${CHAT_RETENTION_DAYS:-10}
+    volumes:
+      - chat-data:/data
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   gateway-service:
     build:
       context: ./gateway-service
@@ -55,11 +79,14 @@ services:
     environment:
       SAFETY_SERVICE_URL: ${SAFETY_SERVICE_URL:-http://safety-service:8001}
       CHAT_SERVICE_URL: ${CHAT_SERVICE_URL:-http://chat-service:8002}
+      SAVE_SERVICE_URL: ${SAVE_SERVICE_URL:-http://save-service:8003}
       CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     depends_on:
       safety-service:
         condition: service_healthy
       chat-service:
+        condition: service_healthy
+      save-service:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -88,3 +115,6 @@ services:
     ports:
       - "5173:80"
     restart: unless-stopped
+
+volumes:
+  chat-data:

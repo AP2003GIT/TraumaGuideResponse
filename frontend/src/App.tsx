@@ -1,15 +1,23 @@
 import {
   FormEvent,
   KeyboardEvent,
+  type ReactNode,
+  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { sendChatMessage } from "./api";
+import {
+  deleteSavedConversation,
+  getSavedConversation,
+  sendChatMessage,
+} from "./api";
 import type {
   ChatMessage,
+  Role,
   RiskLevel,
+  SavedChatMessage,
 } from "./types";
 
 interface DisplayMessage extends ChatMessage {
@@ -17,17 +25,228 @@ interface DisplayMessage extends ChatMessage {
   riskLevel?: RiskLevel;
 }
 
+type DisplayMode = "light" | "dark";
+
 const starterPrompts = [
   "I feel overwhelmed and need a grounding exercise.",
   "Help me understand why stress affects my sleep.",
   "How can I communicate a boundary calmly?",
 ];
 
+const SAVED_SESSION_KEY = "emotional-support-session-id";
+const DISPLAY_MODE_KEY = "emotional-support-display-mode";
+
 function createId(): string {
   return crypto.randomUUID();
 }
 
+function getSavedSessionId(): string {
+  try {
+    const existingSessionId = localStorage.getItem(SAVED_SESSION_KEY);
+    if (existingSessionId) {
+      return existingSessionId;
+    }
+
+    const sessionId = createId();
+    localStorage.setItem(SAVED_SESSION_KEY, sessionId);
+    return sessionId;
+  } catch {
+    return createId();
+  }
+}
+
+function getSavedDisplayMode(): DisplayMode {
+  try {
+    const savedMode = localStorage.getItem(DISPLAY_MODE_KEY);
+    if (savedMode === "light" || savedMode === "dark") {
+      return savedMode;
+    }
+  } catch {
+    // Fall back to the default when browser storage is unavailable.
+  }
+
+  return "light";
+}
+
+function toDisplayMessage(message: SavedChatMessage): DisplayMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    riskLevel: message.risk_level ?? undefined,
+  };
+}
+
+function normalizeAssistantContent(content: string): string {
+  return content
+    .replace(/\r\n?/g, "\n")
+    .replace(/([^\n])\s+(\d+\.\s+)/g, "$1\n$2")
+    .replace(/([^\n])\s+([-*]\s+)/g, "$1\n$2");
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+
+    return part;
+  });
+}
+
+type ContentBlock =
+  | {
+      kind: "paragraph";
+      text: string;
+    }
+  | {
+      kind: "ordered-list";
+      items: string[];
+    }
+  | {
+      kind: "unordered-list";
+      items: string[];
+    };
+
+function parseAssistantContent(content: string): ContentBlock[] {
+  const lines = normalizeAssistantContent(content).split("\n");
+  const blocks: ContentBlock[] = [];
+  let paragraph: string[] = [];
+  let orderedItems: string[] = [];
+  let unorderedItems: string[] = [];
+
+  function flushParagraph() {
+    if (paragraph.length > 0) {
+      blocks.push({
+        kind: "paragraph",
+        text: paragraph.join(" "),
+      });
+      paragraph = [];
+    }
+  }
+
+  function flushOrderedItems() {
+    if (orderedItems.length > 0) {
+      blocks.push({
+        kind: "ordered-list",
+        items: orderedItems,
+      });
+      orderedItems = [];
+    }
+  }
+
+  function flushUnorderedItems() {
+    if (unorderedItems.length > 0) {
+      blocks.push({
+        kind: "unordered-list",
+        items: unorderedItems,
+      });
+      unorderedItems = [];
+    }
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      flushOrderedItems();
+      flushUnorderedItems();
+      continue;
+    }
+
+    const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      flushUnorderedItems();
+      orderedItems.push(orderedMatch[1]);
+      continue;
+    }
+
+    const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
+    if (unorderedMatch) {
+      flushParagraph();
+      flushOrderedItems();
+      unorderedItems.push(unorderedMatch[1]);
+      continue;
+    }
+
+    flushOrderedItems();
+    flushUnorderedItems();
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  flushOrderedItems();
+  flushUnorderedItems();
+
+  return blocks.length > 0
+    ? blocks
+    : [
+        {
+          kind: "paragraph",
+          text: content,
+        },
+      ];
+}
+
+function MessageContent({
+  content,
+  role,
+}: {
+  content: string;
+  role: Role;
+}) {
+  if (role === "user") {
+    return (
+      <div className="message-content plain">
+        <p>{content}</p>
+      </div>
+    );
+  }
+
+  const blocks = parseAssistantContent(content);
+
+  return (
+    <div className="message-content formatted">
+      {blocks.map((block, index) => {
+        if (block.kind === "ordered-list") {
+          return (
+            <ol key={index}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  {renderInlineMarkdown(item)}
+                </li>
+              ))}
+            </ol>
+          );
+        }
+
+        if (block.kind === "unordered-list") {
+          return (
+            <ul key={index}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  {renderInlineMarkdown(item)}
+                </li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p key={index}>{renderInlineMarkdown(block.text)}</p>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function App() {
+  const [sessionId] = useState(getSavedSessionId);
+  const [displayMode, setDisplayMode] =
+    useState<DisplayMode>(getSavedDisplayMode);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -42,6 +261,46 @@ export default function App() {
       })),
     [messages],
   );
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = displayMode;
+    document.documentElement.style.colorScheme = displayMode;
+
+    try {
+      localStorage.setItem(DISPLAY_MODE_KEY, displayMode);
+    } catch {
+      // The selected mode still applies for the current session.
+    }
+  }, [displayMode]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadSavedConversation() {
+      try {
+        const savedConversation =
+          await getSavedConversation(sessionId);
+
+        if (!isCancelled && savedConversation) {
+          setMessages(
+            savedConversation.messages.map(toDisplayMessage),
+          );
+        }
+      } catch {
+        if (!isCancelled) {
+          setError(
+            "Saved chat could not be loaded. You can still start a new conversation.",
+          );
+        }
+      }
+    }
+
+    void loadSavedConversation();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [sessionId]);
 
   async function submitMessage(rawMessage: string) {
     const message = rawMessage.trim();
@@ -68,6 +327,7 @@ export default function App() {
       const response = await sendChatMessage(
         message,
         previousHistory,
+        sessionId,
       );
 
       setMessages((current) => [
@@ -79,6 +339,12 @@ export default function App() {
           riskLevel: response.risk_level,
         },
       ]);
+
+      if (!response.saved) {
+        setError(
+          "Reply received, but this exchange could not be saved.",
+        );
+      }
     } catch (caughtError) {
       const messageText =
         caughtError instanceof Error
@@ -106,11 +372,19 @@ export default function App() {
     }
   }
 
-  function clearConversation() {
+  async function clearConversation() {
     setMessages([]);
     setError(null);
     setDraft("");
     inputRef.current?.focus();
+
+    try {
+      await deleteSavedConversation(sessionId);
+    } catch {
+      setError(
+        "The chat was cleared here, but the saved copy could not be deleted.",
+      );
+    }
   }
 
   return (
@@ -125,20 +399,93 @@ export default function App() {
             </p>
           </div>
 
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={clearConversation}
-            disabled={messages.length === 0 || isSending}
-          >
-            Clear chat
-          </button>
+          <div className="header-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() =>
+                setIsSettingsOpen((current) => !current)
+              }
+              aria-expanded={isSettingsOpen}
+              aria-controls="settings-panel"
+            >
+              Settings
+            </button>
+
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void clearConversation()}
+              disabled={messages.length === 0 || isSending}
+            >
+              Clear chat
+            </button>
+          </div>
         </header>
+
+        {isSettingsOpen && (
+          <section
+            id="settings-panel"
+            className="settings-panel"
+            aria-labelledby="settings-heading"
+          >
+            <div className="settings-header">
+              <div>
+                <h2 id="settings-heading">Settings</h2>
+                <p>General</p>
+              </div>
+
+              <button
+                className="secondary-button compact-button"
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="setting-row">
+              <div>
+                <h3>Display mode</h3>
+                <p>Choose how the app appears on this device.</p>
+              </div>
+
+              <div
+                className="segmented-control"
+                role="group"
+                aria-label="Display mode"
+              >
+                <button
+                  type="button"
+                  className={
+                    displayMode === "light" ? "active" : undefined
+                  }
+                  aria-pressed={displayMode === "light"}
+                  onClick={() => setDisplayMode("light")}
+                >
+                  Light
+                </button>
+
+                <button
+                  type="button"
+                  className={
+                    displayMode === "dark" ? "active" : undefined
+                  }
+                  aria-pressed={displayMode === "dark"}
+                  onClick={() => setDisplayMode("dark")}
+                >
+                  Dark
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
 
         <div className="notice" role="note">
           This assistant is not a therapist, diagnostic tool, or
           emergency service. Do not share identifying or highly
-          sensitive information in this development demo.
+          sensitive information in this development demo. Chats are
+          saved for up to 10 days.
         </div>
 
         <div
@@ -189,7 +536,10 @@ export default function App() {
                     )}
                 </div>
 
-                <p>{message.content}</p>
+                <MessageContent
+                  content={message.content}
+                  role={message.role}
+                />
               </article>
             ))
           )}

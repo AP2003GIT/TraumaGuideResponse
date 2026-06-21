@@ -14,6 +14,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     history: list[ChatMessage] = Field(default_factory=list, max_length=20)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
 
     @field_validator("message")
     @classmethod
@@ -21,6 +22,20 @@ class ChatRequest(BaseModel):
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("Message cannot be blank.")
+        return cleaned
+
+    @field_validator("session_id")
+    @classmethod
+    def session_id_must_not_be_blank(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return value
+
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Session ID cannot be blank.")
         return cleaned
 
 
@@ -50,13 +65,47 @@ class ChatResponse(BaseModel):
     risk_level: RiskLevel
     model: str | None
     request_id: str
+    session_id: str | None = None
+    saved: bool = False
     disclaimer: str = (
         "General emotional support and psychoeducation only; "
         "not diagnosis, treatment, or emergency care."
     )
 
 
+class SaveTurnRequest(BaseModel):
+    user_message: str
+    assistant_message: str
+    risk_level: RiskLevel
+    model: str | None
+    request_id: str
+
+
+class SavedMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    risk_level: RiskLevel | None = None
+    model: str | None = None
+    request_id: str
+    created_at: str
+
+
+class SavedConversation(BaseModel):
+    session_id: str
+    messages: list[SavedMessage]
+    created_at: str
+    updated_at: str
+    expires_at: str
+    retention_days: int
+
+
+class DeleteConversationResponse(BaseModel):
+    deleted: bool
+
+
 class DependencyStatus(BaseModel):
     gateway: str
     safety_service: str
     chat_service: str
+    save_service: str

@@ -2,18 +2,27 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.clients import DownstreamServiceError, get_health, post_model
+from app.clients import (
+    DownstreamServiceError,
+    delete_model,
+    get_health,
+    get_model,
+    post_model,
+)
 from app.config import get_settings
 from app.schemas import (
     ChatGenerationRequest,
     ChatGenerationResponse,
     ChatRequest,
     ChatResponse,
+    DeleteConversationResponse,
     DependencyStatus,
     RiskAssessment,
+    SavedConversation,
+    SaveTurnRequest,
 )
 
 settings = get_settings()
@@ -77,12 +86,54 @@ async def dependency_health(request: Request) -> DependencyStatus:
         client=client,
         url=f"{settings.chat_service_url}/health",
     )
+    save_status = await get_health(
+        client=client,
+        url=f"{settings.save_service_url}/health",
+    )
 
     return DependencyStatus(
         gateway="healthy",
         safety_service=safety_status,
         chat_service=chat_status,
+        save_service=save_status,
     )
+
+
+async def save_exchange(
+    *,
+    client: httpx.AsyncClient,
+    session_id: str | None,
+    user_message: str,
+    assistant_message: str,
+    risk_level: str,
+    model: str | None,
+    request_id: str,
+) -> bool:
+    if not session_id:
+        return False
+
+    try:
+        saved = await post_model(
+            client=client,
+            service_name="save-service",
+            url=(
+                f"{settings.save_service_url}/internal/conversations/"
+                f"{session_id}/turns"
+            ),
+            payload=SaveTurnRequest(
+                user_message=user_message,
+                assistant_message=assistant_message,
+                risk_level=risk_level,
+                model=model,
+                request_id=request_id,
+            ),
+            response_model=SavedConversation,
+            request_id=request_id,
+        )
+        assert isinstance(saved, SavedConversation)
+        return True
+    except DownstreamServiceError:
+        return False
 
 
 @app.post(
@@ -115,11 +166,23 @@ async def chat(
                     "Safety response was missing for a high-risk message.",
                 )
 
+            saved = await save_exchange(
+                client=client,
+                session_id=payload.session_id,
+                user_message=payload.message,
+                assistant_message=assessment.safe_reply,
+                risk_level=assessment.risk_level,
+                model=None,
+                request_id=request_id,
+            )
+
             return ChatResponse(
                 reply=assessment.safe_reply,
                 risk_level=assessment.risk_level,
                 model=None,
                 request_id=request_id,
+                session_id=payload.session_id,
+                saved=saved,
             )
 
         generation_request = ChatGenerationRequest(
@@ -141,15 +204,99 @@ async def chat(
         )
         assert isinstance(generation, ChatGenerationResponse)
 
-        return ChatResponse(
-            reply=generation.reply,
+        saved = await save_exchange(
+            client=client,
+            session_id=payload.session_id,
+            user_message=payload.message,
+            assistant_message=generation.reply,
             risk_level=assessment.risk_level,
             model=generation.model,
             request_id=request_id,
         )
 
+        return ChatResponse(
+            reply=generation.reply,
+            risk_level=assessment.risk_level,
+            model=generation.model,
+            request_id=request_id,
+            session_id=payload.session_id,
+            saved=saved,
+        )
+
     except DownstreamServiceError as exc:
         # Safety failure is fail-closed: no normal generation is attempted.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "request_id": request_id,
+                "service": exc.service,
+                "message": str(exc),
+            },
+        ) from exc
+
+
+@app.get(
+    "/api/conversations/{session_id}",
+    response_model=SavedConversation,
+    tags=["chat"],
+)
+async def get_saved_conversation(
+    request: Request,
+    session_id: str = Path(min_length=1, max_length=120),
+) -> SavedConversation:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        conversation = await get_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/conversations/{session_id}",
+            response_model=SavedConversation,
+            request_id=request_id,
+        )
+        assert isinstance(conversation, SavedConversation)
+        return conversation
+    except DownstreamServiceError as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Saved conversation not found.",
+            ) from exc
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "request_id": request_id,
+                "service": exc.service,
+                "message": str(exc),
+            },
+        ) from exc
+
+
+@app.delete(
+    "/api/conversations/{session_id}",
+    response_model=DeleteConversationResponse,
+    tags=["chat"],
+)
+async def delete_saved_conversation(
+    request: Request,
+    session_id: str = Path(min_length=1, max_length=120),
+) -> DeleteConversationResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        deletion = await delete_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/conversations/{session_id}",
+            response_model=DeleteConversationResponse,
+            request_id=request_id,
+        )
+        assert isinstance(deletion, DeleteConversationResponse)
+        return deletion
+    except DownstreamServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={

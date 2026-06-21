@@ -1,18 +1,13 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Emotional Support Gateway"
-    safety_service_url: str = "http://127.0.0.1:8001"
-    chat_service_url: str = "http://127.0.0.1:8002"
-    save_service_url: str = "http://127.0.0.1:8003"
-    request_timeout_seconds: float = 30.0
-    cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
+    app_name: str = "Emotional Support Save Service"
+    chat_storage_path: str = "data/chats.sqlite3"
+    chat_retention_days: int = Field(default=10, ge=1, le=365)
 
     model_config = SettingsConfigDict(
         env_file=".env",
