@@ -1,201 +1,129 @@
-# Emotional Support Platform
+# TraumaGuideResponse
 
-A portfolio-oriented microservices application using:
+TraumaGuideResponse is a safety-aware AI web application that provides general emotional support and psychoeducation.
 
-- React + TypeScript + Vite
-- FastAPI
-- Gemini API
-- HTTPX
-- Docker and Docker Compose
+The application uses the Gemini API to generate supportive responses while a separate safety service first evaluates every message for possible risk. Messages classified as high or immediate risk bypass normal AI generation and receive a controlled safety response instead.
+
+> This project is not a therapist, diagnostic tool, medical service, or emergency service.
 
 ## Architecture
 
+The project follows a microservices architecture:
+
 ```text
-React browser client
-        |
-        v
-Gateway Service :8000
-   |             |
-   v             v
-Safety :8001   Chat :8002
-   |             |
-   +---- Gemini--+
+React Frontend
+      |
+      v
+API Gateway
+   |       |
+   v       v
+Safety   Chat
+Service  Service
+   \       /
+    Gemini API
 ```
 
-The browser communicates only with the gateway.
+### Frontend
 
-The gateway always calls the safety service first. High or immediate-risk
-messages bypass open-ended chat generation and receive a controlled response.
-Standard and elevated messages are forwarded to the chat service.
+The React frontend provides the chat interface and automatically sends recent conversation history with every new message.
 
-## Preserve your existing project
+### Gateway Service
 
-This is a separate project. Do not delete your current working PyCharm project.
-Keep its `main.py` as the monolithic prototype and open this folder in a new
-PyCharm window.
+The gateway is the public backend entry point. It:
 
-## Prerequisites
+* receives requests from the frontend;
+* sends every message to the safety service;
+* forwards standard and elevated-risk messages to the chat service;
+* returns one unified response to the frontend.
 
-### Docker route
+### Safety Service
 
-- Docker Desktop
-- A Gemini API key
+The safety service:
 
-### Manual route
+* performs basic deterministic safety checks;
+* uses structured Gemini output to classify risk;
+* returns one of four risk levels:
 
-- Python 3.11 or 3.12
-- Node.js 20.19+ or 22.12+
-- npm
-- A Gemini API key
+  * `standard`
+  * `elevated`
+  * `high`
+  * `immediate`
+* provides controlled responses for high and immediate-risk messages.
 
-## Fastest start: Docker Compose
+### Chat Service
 
-1. Copy `.env.example` to `.env`.
+The chat service:
 
-PowerShell:
+* receives only standard and elevated-risk requests;
+* sends conversation history to Gemini;
+* generates supportive and context-aware responses;
+* follows strict instructions not to diagnose, prescribe medication, or replace professional care.
+
+## Technology Stack
+
+* React
+* TypeScript
+* Vite
+* Python
+* FastAPI
+* Gemini API
+* Docker
+* Docker Compose
+* Nginx
+* HTTPX
+* Pydantic
+
+## Running the Project
+
+Create a `.env` file from the included example:
+
+```bash
+cp .env.example .env
+```
+
+On Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-2. Put your real Gemini key in `.env`.
+Add your Gemini API key:
 
 ```env
-GEMINI_API_KEY=your_real_key
+GEMINI_API_KEY=your_api_key
 ```
 
-3. Start the complete platform:
+Start the complete application:
 
-```powershell
+```bash
 docker compose up --build
 ```
 
-4. Open:
+Open the frontend:
 
-- Frontend: http://localhost:5173
-- Gateway Swagger: http://localhost:8000/docs
-- Safety Swagger: http://localhost:8001/docs
-- Chat Swagger: http://localhost:8002/docs
+```text
+http://localhost:5173
+```
 
-Stop everything:
+Stop the application:
 
-```powershell
+```bash
 docker compose down
 ```
 
-## Test each service independently
+## Current Features
 
-### Safety service
+* AI-powered emotional-support chat
+* Multi-turn conversation history
+* Structured risk classification
+* Controlled high-risk response routing
+* Separate gateway, safety, and chat services
+* Dockerized development environment
+* Health checks for backend services
+* Responsive React interface
 
-Open http://localhost:8001/docs and test `POST /internal/classify`:
+## Important Notice
 
-```json
-{
-  "message": "I have felt overwhelmed for weeks and can barely function.",
-  "history": []
-}
-```
+TraumaGuideResponse is currently an MVP created for learning and portfolio purposes.
 
-### Chat service
-
-Open http://localhost:8002/docs and test `POST /internal/generate`:
-
-```json
-{
-  "message": "I had a stressful day. Help me calm down.",
-  "history": [],
-  "risk_level": "standard",
-  "needs_professional_support": false
-}
-```
-
-The chat service intentionally rejects `high` and `immediate` risk levels.
-
-### Gateway
-
-Open http://localhost:8000/docs and test `POST /api/chat`:
-
-```json
-{
-  "message": "I had a stressful day. Help me calm down.",
-  "history": []
-}
-```
-
-## Manual PyCharm development
-
-Each Python service is an independent FastAPI application.
-
-### 1. Safety service
-
-```powershell
-cd safety-service
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-Copy-Item .env.example .env
-python -m uvicorn app.main:app --reload --port 8001
-```
-
-### 2. Chat service
-
-Open a second terminal:
-
-```powershell
-cd chat-service
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-Copy-Item .env.example .env
-python -m uvicorn app.main:app --reload --port 8002
-```
-
-### 3. Gateway service
-
-Open a third terminal:
-
-```powershell
-cd gateway-service
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-Copy-Item .env.example .env
-python -m uvicorn app.main:app --reload --port 8000
-```
-
-### 4. React frontend
-
-Open a fourth terminal:
-
-```powershell
-cd frontend
-Copy-Item .env.example .env
-npm install
-npm run dev
-```
-
-## Run tests
-
-Run these from each service folder:
-
-```powershell
-pytest
-```
-
-## Important limitations
-
-This is a development and portfolio project, not an emergency service or
-medical device.
-
-Before real-world deployment, add:
-
-- clinician-reviewed crisis copy and escalation rules;
-- verified country-specific emergency resources;
-- comprehensive multilingual safety evaluation;
-- authentication and authorization for internal endpoints;
-- rate limiting;
-- secrets management;
-- encrypted storage and explicit retention controls;
-- observability without logging sensitive message bodies;
-- independent security and privacy review;
-- reviewed RAG sources and citation validation.
+It should not be used as a replacement for professional mental-health care, emergency services, diagnosis, or treatment.
