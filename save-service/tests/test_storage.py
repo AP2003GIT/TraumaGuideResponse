@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.schemas import SaveTurnRequest
+from app.schemas import RegisterRequest, SaveTurnRequest
 from app.storage import ChatStore, ConversationNotFoundError
 
 
@@ -24,12 +24,25 @@ def create_store() -> ChatStore:
     )
 
 
+def create_user(store: ChatStore) -> str:
+    user = store.create_user(
+        RegisterRequest(
+            display_name="Test User",
+            email=f"test-{uuid4()}@example.com",
+            password="test-password",
+        )
+    )
+    return user.user_id
+
+
 def test_save_and_load_conversation() -> None:
     store = create_store()
     store.initialize()
+    user_id = create_user(store)
     session_id = f"test-{uuid4()}"
 
     saved = store.save_turn(
+        user_id,
         session_id,
         SaveTurnRequest(
             user_message="I feel overwhelmed.",
@@ -65,9 +78,11 @@ def test_expired_conversation_is_removed() -> None:
         max_saved_chats=10,
     )
     store.initialize()
+    user_id = create_user(store)
     session_id = f"test-{uuid4()}"
 
     store.save_turn(
+        user_id,
         session_id,
         SaveTurnRequest(
             user_message="Hello.",
@@ -81,6 +96,7 @@ def test_expired_conversation_is_removed() -> None:
 
     with pytest.raises(ConversationNotFoundError):
         store.get_conversation(
+            user_id,
             session_id,
             now=datetime(2026, 1, 3, tzinfo=timezone.utc),
         )
@@ -94,10 +110,12 @@ def test_oldest_conversations_are_pruned() -> None:
         max_saved_chats=2,
     )
     store.initialize()
+    user_id = create_user(store)
     prefix = f"test-{uuid4()}"
 
     for index in range(3):
         store.save_turn(
+            user_id,
             f"{prefix}-{index}",
             SaveTurnRequest(
                 user_message=f"Hello {index}.",
@@ -111,9 +129,16 @@ def test_oldest_conversations_are_pruned() -> None:
 
     with pytest.raises(ConversationNotFoundError):
         store.get_conversation(
+            user_id,
             f"{prefix}-0",
             now=datetime(2026, 1, 4, tzinfo=timezone.utc),
         )
 
-    assert store.get_conversation(f"{prefix}-1").session_id == f"{prefix}-1"
-    assert store.get_conversation(f"{prefix}-2").session_id == f"{prefix}-2"
+    assert (
+        store.get_conversation(user_id, f"{prefix}-1").session_id
+        == f"{prefix}-1"
+    )
+    assert (
+        store.get_conversation(user_id, f"{prefix}-2").session_id
+        == f"{prefix}-2"
+    )

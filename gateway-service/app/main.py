@@ -2,9 +2,10 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Path, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth import create_access_token, get_current_user
 from app.clients import (
     DownstreamServiceError,
     delete_model,
@@ -14,12 +15,18 @@ from app.clients import (
 )
 from app.config import get_settings
 from app.schemas import (
+    AccountExport,
+    AuthRequest,
+    AuthResponse,
+    AuthenticatedUser,
     ChatGenerationRequest,
     ChatGenerationResponse,
     ChatRequest,
     ChatResponse,
     DeleteConversationResponse,
+    DeleteUserDataResponse,
     DependencyStatus,
+    RegisterRequest,
     RiskAssessment,
     SavedConversation,
     SavedConversationList,
@@ -27,6 +34,20 @@ from app.schemas import (
 )
 
 settings = get_settings()
+
+
+def _service_unavailable(
+    exc: DownstreamServiceError,
+    request_id: str,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "request_id": request_id,
+            "service": exc.service,
+            "message": str(exc),
+        },
+    )
 
 
 @asynccontextmanager
@@ -100,9 +121,148 @@ async def dependency_health(request: Request) -> DependencyStatus:
     )
 
 
+@app.post(
+    "/api/auth/register",
+    response_model=AuthResponse,
+    tags=["auth"],
+)
+async def register(
+    payload: RegisterRequest,
+    request: Request,
+) -> AuthResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        user = await post_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/auth/register",
+            payload=payload,
+            response_model=AuthenticatedUser,
+            request_id=request_id,
+        )
+        assert isinstance(user, AuthenticatedUser)
+    except DownstreamServiceError as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with that email already exists.",
+            ) from exc
+        raise _service_unavailable(exc, request_id)
+
+    return AuthResponse(
+        access_token=create_access_token(user, settings),
+        user=user,
+    )
+
+
+@app.post(
+    "/api/auth/login",
+    response_model=AuthResponse,
+    tags=["auth"],
+)
+async def login(
+    payload: AuthRequest,
+    request: Request,
+) -> AuthResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        user = await post_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/auth/login",
+            payload=payload,
+            response_model=AuthenticatedUser,
+            request_id=request_id,
+        )
+        assert isinstance(user, AuthenticatedUser)
+    except DownstreamServiceError as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password.",
+            ) from exc
+        raise _service_unavailable(exc, request_id)
+
+    return AuthResponse(
+        access_token=create_access_token(user, settings),
+        user=user,
+    )
+
+
+@app.get(
+    "/api/auth/me",
+    response_model=AuthenticatedUser,
+    tags=["auth"],
+)
+async def me(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthenticatedUser:
+    return user
+
+
+@app.get(
+    "/api/account/export",
+    response_model=AccountExport,
+    tags=["auth"],
+)
+async def export_account_data(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AccountExport:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        export = await get_model(
+            client=client,
+            service_name="save-service",
+            url=(
+                f"{settings.save_service_url}/internal/users/"
+                f"{user.user_id}/export"
+            ),
+            response_model=AccountExport,
+            request_id=request_id,
+        )
+        assert isinstance(export, AccountExport)
+        return export
+    except DownstreamServiceError as exc:
+        raise _service_unavailable(exc, request_id)
+
+
+@app.delete(
+    "/api/account",
+    response_model=DeleteUserDataResponse,
+    tags=["auth"],
+)
+async def delete_account_data(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeleteUserDataResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        deletion = await delete_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/users/{user.user_id}",
+            response_model=DeleteUserDataResponse,
+            request_id=request_id,
+        )
+        assert isinstance(deletion, DeleteUserDataResponse)
+        return deletion
+    except DownstreamServiceError as exc:
+        raise _service_unavailable(exc, request_id)
+
+
 async def save_exchange(
     *,
     client: httpx.AsyncClient,
+    user_id: str,
     session_id: str | None,
     user_message: str,
     assistant_message: str,
@@ -118,7 +278,8 @@ async def save_exchange(
             client=client,
             service_name="save-service",
             url=(
-                f"{settings.save_service_url}/internal/conversations/"
+                f"{settings.save_service_url}/internal/users/{user_id}/"
+                "conversations/"
                 f"{session_id}/turns"
             ),
             payload=SaveTurnRequest(
@@ -145,6 +306,7 @@ async def save_exchange(
 async def chat(
     payload: ChatRequest,
     request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> ChatResponse:
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
@@ -169,6 +331,7 @@ async def chat(
 
             saved = await save_exchange(
                 client=client,
+                user_id=user.user_id,
                 session_id=payload.session_id,
                 user_message=payload.message,
                 assistant_message=assessment.safe_reply,
@@ -207,6 +370,7 @@ async def chat(
 
         saved = await save_exchange(
             client=client,
+            user_id=user.user_id,
             session_id=payload.session_id,
             user_message=payload.message,
             assistant_message=generation.reply,
@@ -226,14 +390,7 @@ async def chat(
 
     except DownstreamServiceError as exc:
         # Safety failure is fail-closed: no normal generation is attempted.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "request_id": request_id,
-                "service": exc.service,
-                "message": str(exc),
-            },
-        ) from exc
+        raise _service_unavailable(exc, request_id) from exc
 
 
 @app.get(
@@ -243,6 +400,7 @@ async def chat(
 )
 async def list_saved_conversations(
     request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> SavedConversationList:
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
@@ -251,21 +409,17 @@ async def list_saved_conversations(
         conversations = await get_model(
             client=client,
             service_name="save-service",
-            url=f"{settings.save_service_url}/internal/conversations",
+            url=(
+                f"{settings.save_service_url}/internal/users/"
+                f"{user.user_id}/conversations"
+            ),
             response_model=SavedConversationList,
             request_id=request_id,
         )
         assert isinstance(conversations, SavedConversationList)
         return conversations
     except DownstreamServiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "request_id": request_id,
-                "service": exc.service,
-                "message": str(exc),
-            },
-        ) from exc
+        raise _service_unavailable(exc, request_id) from exc
 
 
 @app.get(
@@ -275,6 +429,7 @@ async def list_saved_conversations(
 )
 async def get_saved_conversation(
     request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
     session_id: str = Path(min_length=1, max_length=120),
 ) -> SavedConversation:
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
@@ -284,7 +439,10 @@ async def get_saved_conversation(
         conversation = await get_model(
             client=client,
             service_name="save-service",
-            url=f"{settings.save_service_url}/internal/conversations/{session_id}",
+            url=(
+                f"{settings.save_service_url}/internal/users/"
+                f"{user.user_id}/conversations/{session_id}"
+            ),
             response_model=SavedConversation,
             request_id=request_id,
         )
@@ -297,14 +455,7 @@ async def get_saved_conversation(
                 detail="Saved conversation not found.",
             ) from exc
 
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "request_id": request_id,
-                "service": exc.service,
-                "message": str(exc),
-            },
-        ) from exc
+        raise _service_unavailable(exc, request_id) from exc
 
 
 @app.delete(
@@ -314,6 +465,7 @@ async def get_saved_conversation(
 )
 async def delete_saved_conversation(
     request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
     session_id: str = Path(min_length=1, max_length=120),
 ) -> DeleteConversationResponse:
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
@@ -323,18 +475,14 @@ async def delete_saved_conversation(
         deletion = await delete_model(
             client=client,
             service_name="save-service",
-            url=f"{settings.save_service_url}/internal/conversations/{session_id}",
+            url=(
+                f"{settings.save_service_url}/internal/users/"
+                f"{user.user_id}/conversations/{session_id}"
+            ),
             response_model=DeleteConversationResponse,
             request_id=request_id,
         )
         assert isinstance(deletion, DeleteConversationResponse)
         return deletion
     except DownstreamServiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "request_id": request_id,
-                "service": exc.service,
-                "message": str(exc),
-            },
-        ) from exc
+        raise _service_unavailable(exc, request_id) from exc

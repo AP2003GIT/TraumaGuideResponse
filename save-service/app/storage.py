@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -7,12 +10,28 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.schemas import (
+    AccountExport,
+    AuthRequest,
+    AuthenticatedUser,
+    RegisterRequest,
     SaveTurnRequest,
     SavedConversation,
     SavedConversationList,
-    SavedMessage,
     SavedConversationSummary,
+    SavedMessage,
 )
+
+
+class AccountAlreadyExistsError(ValueError):
+    pass
+
+
+class InvalidCredentialsError(ValueError):
+    pass
+
+
+class UserNotFoundError(LookupError):
+    pass
 
 
 class ConversationNotFoundError(LookupError):
@@ -34,13 +53,28 @@ class ChatStore:
         with self._connect() as connection:
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS conversations (
                     session_id TEXT PRIMARY KEY,
+                    user_id TEXT,
                     created_at TIMESTAMPTZ NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL,
                     expires_at TIMESTAMPTZ NOT NULL
                 )
                 """
+            )
+            connection.execute(
+                "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id TEXT"
             )
             connection.execute(
                 """
@@ -71,14 +105,20 @@ class ChatStore:
             )
             connection.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_users_email
+                    ON users(email)
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_conversations_expires_at
                     ON conversations(expires_at)
                 """
             )
             connection.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
-                    ON conversations(updated_at DESC)
+                CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
+                    ON conversations(user_id, updated_at DESC)
                 """
             )
             connection.execute(
@@ -88,14 +128,91 @@ class ChatStore:
                 """
             )
             self._cleanup_expired(connection, self._now())
-            self._prune_oldest(connection)
 
     def health_check(self) -> None:
         with self._connect() as connection:
             connection.execute("SELECT 1")
 
+    def create_user(self, payload: RegisterRequest) -> AuthenticatedUser:
+        now = self._now()
+        user = AuthenticatedUser(
+            user_id=str(uuid4()),
+            email=payload.email,
+            display_name=payload.display_name,
+        )
+
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO users (
+                        user_id,
+                        email,
+                        display_name,
+                        password_hash,
+                        created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        user.user_id,
+                        user.email,
+                        user.display_name,
+                        self._hash_password(payload.password),
+                        now,
+                    ),
+                )
+        except psycopg.errors.UniqueViolation as exc:
+            raise AccountAlreadyExistsError(payload.email) from exc
+
+        return user
+
+    def authenticate_user(self, payload: AuthRequest) -> AuthenticatedUser:
+        with self._connect() as connection:
+            user = connection.execute(
+                """
+                SELECT user_id, email, display_name, password_hash
+                FROM users
+                WHERE email = %s
+                """,
+                (payload.email,),
+            ).fetchone()
+
+        if user is None or not self._verify_password(
+            payload.password,
+            user["password_hash"],
+        ):
+            raise InvalidCredentialsError("Invalid email or password.")
+
+        return AuthenticatedUser(
+            user_id=user["user_id"],
+            email=user["email"],
+            display_name=user["display_name"],
+        )
+
+    def get_user(self, user_id: str) -> AuthenticatedUser:
+        with self._connect() as connection:
+            user = connection.execute(
+                """
+                SELECT user_id, email, display_name
+                FROM users
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            ).fetchone()
+
+        if user is None:
+            raise UserNotFoundError(user_id)
+
+        return AuthenticatedUser(
+            user_id=user["user_id"],
+            email=user["email"],
+            display_name=user["display_name"],
+        )
+
     def save_turn(
         self,
+        user_id: str,
         session_id: str,
         payload: SaveTurnRequest,
         *,
@@ -106,15 +223,23 @@ class ChatStore:
 
         with self._connect() as connection:
             self._cleanup_expired(connection, saved_at)
+            self._ensure_user_exists(connection, user_id)
 
             conversation = connection.execute(
                 """
-                SELECT created_at
+                SELECT created_at, user_id
                 FROM conversations
                 WHERE session_id = %s
                 """,
                 (session_id,),
             ).fetchone()
+            if (
+                conversation is not None
+                and conversation["user_id"] is not None
+                and conversation["user_id"] != user_id
+            ):
+                raise ConversationNotFoundError(session_id)
+
             created_at = (
                 conversation["created_at"]
                 if conversation is not None
@@ -125,16 +250,18 @@ class ChatStore:
                 """
                 INSERT INTO conversations (
                     session_id,
+                    user_id,
                     created_at,
                     updated_at,
                     expires_at
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT(session_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
                     updated_at = EXCLUDED.updated_at,
                     expires_at = EXCLUDED.expires_at
                 """,
-                (session_id, created_at, saved_at, expires_at),
+                (session_id, user_id, created_at, saved_at, expires_at),
             )
 
             message_rows = [
@@ -181,12 +308,13 @@ class ChatStore:
                     message_rows,
                 )
 
-            self._prune_oldest(connection)
+            self._prune_oldest(connection, user_id)
 
-        return self.get_conversation(session_id, now=saved_at)
+        return self.get_conversation(user_id, session_id, now=saved_at)
 
     def get_conversation(
         self,
+        user_id: str,
         session_id: str,
         *,
         now: datetime | None = None,
@@ -198,11 +326,16 @@ class ChatStore:
 
             conversation = connection.execute(
                 """
-                SELECT session_id, created_at, updated_at, expires_at
+                SELECT
+                    session_id,
+                    user_id,
+                    created_at,
+                    updated_at,
+                    expires_at
                 FROM conversations
-                WHERE session_id = %s
+                WHERE session_id = %s AND user_id = %s
                 """,
-                (session_id,),
+                (session_id, user_id),
             ).fetchone()
 
             if conversation is None:
@@ -225,28 +358,11 @@ class ChatStore:
                 (session_id,),
             ).fetchall()
 
-        return SavedConversation(
-            session_id=conversation["session_id"],
-            messages=[
-                SavedMessage(
-                    id=message["id"],
-                    role=message["role"],
-                    content=message["content"],
-                    risk_level=message["risk_level"],
-                    model=message["model"],
-                    request_id=message["request_id"],
-                    created_at=self._ensure_utc(message["created_at"]),
-                )
-                for message in messages
-            ],
-            created_at=self._ensure_utc(conversation["created_at"]),
-            updated_at=self._ensure_utc(conversation["updated_at"]),
-            expires_at=self._ensure_utc(conversation["expires_at"]),
-            retention_days=self.retention_days,
-        )
+        return self._conversation_from_rows(conversation, messages)
 
     def list_conversations(
         self,
+        user_id: str,
         *,
         now: datetime | None = None,
     ) -> SavedConversationList:
@@ -254,11 +370,12 @@ class ChatStore:
 
         with self._connect() as connection:
             self._cleanup_expired(connection, checked_at)
-            self._prune_oldest(connection)
+            self._prune_oldest(connection, user_id)
 
             conversations = connection.execute(
                 """
                 SELECT
+                    c.user_id,
                     c.session_id,
                     c.created_at,
                     c.updated_at,
@@ -295,7 +412,9 @@ class ChatStore:
                 FROM conversations AS c
                 LEFT JOIN messages AS m
                     ON m.session_id = c.session_id
+                WHERE c.user_id = %s
                 GROUP BY
+                    c.user_id,
                     c.session_id,
                     c.created_at,
                     c.updated_at,
@@ -303,12 +422,13 @@ class ChatStore:
                 ORDER BY c.updated_at DESC, c.session_id DESC
                 LIMIT %s
                 """,
-                (self.max_saved_chats,),
+                (user_id, self.max_saved_chats),
             ).fetchall()
 
         return SavedConversationList(
             conversations=[
                 SavedConversationSummary(
+                    user_id=conversation["user_id"],
                     session_id=conversation["session_id"],
                     title=conversation["title"],
                     last_message_preview=(
@@ -332,17 +452,72 @@ class ChatStore:
             retention_days=self.retention_days,
         )
 
-    def delete_conversation(self, session_id: str) -> bool:
+    def export_user_data(self, user_id: str) -> AccountExport:
+        user = self.get_user(user_id)
+        conversations: list[SavedConversation] = []
+
+        with self._connect() as connection:
+            self._cleanup_expired(connection, self._now())
+            rows = connection.execute(
+                """
+                SELECT session_id
+                FROM conversations
+                WHERE user_id = %s
+                ORDER BY updated_at DESC, session_id DESC
+                """,
+                (user_id,),
+            ).fetchall()
+
+        for row in rows:
+            conversations.append(
+                self.get_conversation(user_id, row["session_id"])
+            )
+
+        return AccountExport(
+            user=user,
+            conversations=conversations,
+            exported_at=self._now(),
+        )
+
+    def delete_conversation(self, user_id: str, session_id: str) -> bool:
         with self._connect() as connection:
             result = connection.execute(
-                "DELETE FROM conversations WHERE session_id = %s",
-                (session_id,),
+                """
+                DELETE FROM conversations
+                WHERE session_id = %s AND user_id = %s
+                """,
+                (session_id, user_id),
             )
 
         return result.rowcount > 0
 
+    def delete_user_data(self, user_id: str) -> tuple[bool, int]:
+        with self._connect() as connection:
+            deleted_conversations = connection.execute(
+                "DELETE FROM conversations WHERE user_id = %s",
+                (user_id,),
+            ).rowcount
+            deleted_user = connection.execute(
+                "DELETE FROM users WHERE user_id = %s",
+                (user_id,),
+            ).rowcount
+
+        return deleted_user > 0, deleted_conversations
+
     def _connect(self) -> psycopg.Connection:
         return psycopg.connect(self.database_url, row_factory=dict_row)
+
+    def _ensure_user_exists(
+        self,
+        connection: psycopg.Connection,
+        user_id: str,
+    ) -> None:
+        user = connection.execute(
+            "SELECT user_id FROM users WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+        if user is None:
+            raise UserNotFoundError(user_id)
 
     def _cleanup_expired(
         self,
@@ -354,19 +529,79 @@ class ChatStore:
             (now,),
         )
 
-    def _prune_oldest(self, connection: psycopg.Connection) -> None:
+    def _prune_oldest(
+        self,
+        connection: psycopg.Connection,
+        user_id: str,
+    ) -> None:
         connection.execute(
             """
             DELETE FROM conversations
             WHERE session_id IN (
                 SELECT session_id
                 FROM conversations
+                WHERE user_id = %s
                 ORDER BY updated_at DESC, session_id DESC
                 OFFSET %s
             )
             """,
-            (self.max_saved_chats,),
+            (user_id, self.max_saved_chats),
         )
+
+    def _conversation_from_rows(
+        self,
+        conversation: dict,
+        messages: list[dict],
+    ) -> SavedConversation:
+        return SavedConversation(
+            user_id=conversation["user_id"],
+            session_id=conversation["session_id"],
+            messages=[
+                SavedMessage(
+                    id=message["id"],
+                    role=message["role"],
+                    content=message["content"],
+                    risk_level=message["risk_level"],
+                    model=message["model"],
+                    request_id=message["request_id"],
+                    created_at=self._ensure_utc(message["created_at"]),
+                )
+                for message in messages
+            ],
+            created_at=self._ensure_utc(conversation["created_at"]),
+            updated_at=self._ensure_utc(conversation["updated_at"]),
+            expires_at=self._ensure_utc(conversation["expires_at"]),
+            retention_days=self.retention_days,
+        )
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        iterations = 260_000
+        salt = secrets.token_hex(16)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            iterations,
+        ).hex()
+        return f"pbkdf2_sha256${iterations}${salt}${digest}"
+
+    @staticmethod
+    def _verify_password(password: str, password_hash: str) -> bool:
+        try:
+            algorithm, iterations, salt, expected = password_hash.split("$")
+            if algorithm != "pbkdf2_sha256":
+                return False
+            digest = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                int(iterations),
+            ).hex()
+        except ValueError:
+            return False
+
+        return hmac.compare_digest(digest, expected)
 
     @staticmethod
     def _now() -> datetime:

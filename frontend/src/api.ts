@@ -1,4 +1,6 @@
 import type {
+  AccountExport,
+  AuthResponse,
   ChatMessage,
   ChatResponse,
   SavedConversation,
@@ -29,15 +31,64 @@ async function getErrorMessage(response: Response): Promise<string> {
   return errorMessage;
 }
 
+function authHeaders(token: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+export async function registerAccount(
+  displayName: string,
+  email: string,
+  password: string,
+): Promise<AuthResponse> {
+  return authRequest("/api/auth/register", {
+    display_name: displayName,
+    email,
+    password,
+  });
+}
+
+export async function loginAccount(
+  email: string,
+  password: string,
+): Promise<AuthResponse> {
+  return authRequest("/api/auth/login", {
+    email,
+    password,
+  });
+}
+
+async function authRequest(
+  path: string,
+  body: Record<string, string>,
+): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as AuthResponse;
+}
+
 export async function sendChatMessage(
   message: string,
   history: ChatMessage[],
   sessionId: string,
+  token: string,
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_BASE_URL}/api/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(token),
     },
     body: JSON.stringify({
       message,
@@ -55,9 +106,13 @@ export async function sendChatMessage(
 
 export async function getSavedConversation(
   sessionId: string,
+  token: string,
 ): Promise<SavedConversation | null> {
   const response = await fetch(
     `${API_BASE_URL}/api/conversations/${encodeURIComponent(sessionId)}`,
+    {
+      headers: authHeaders(token),
+    },
   );
 
   if (response.status === 404) {
@@ -71,8 +126,12 @@ export async function getSavedConversation(
   return (await response.json()) as SavedConversation;
 }
 
-export async function getSavedConversations(): Promise<SavedConversationList> {
-  const response = await fetch(`${API_BASE_URL}/api/conversations`);
+export async function getSavedConversations(
+  token: string,
+): Promise<SavedConversationList> {
+  const response = await fetch(`${API_BASE_URL}/api/conversations`, {
+    headers: authHeaders(token),
+  });
 
   if (!response.ok) {
     throw new Error(await getErrorMessage(response));
@@ -83,13 +142,40 @@ export async function getSavedConversations(): Promise<SavedConversationList> {
 
 export async function deleteSavedConversation(
   sessionId: string,
+  token: string,
 ): Promise<void> {
   const response = await fetch(
     `${API_BASE_URL}/api/conversations/${encodeURIComponent(sessionId)}`,
     {
       method: "DELETE",
+      headers: authHeaders(token),
     },
   );
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+}
+
+export async function exportAccountData(
+  token: string,
+): Promise<AccountExport> {
+  const response = await fetch(`${API_BASE_URL}/api/account/export`, {
+    headers: authHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as AccountExport;
+}
+
+export async function deleteAccountData(token: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/account`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
 
   if (!response.ok) {
     throw new Error(await getErrorMessage(response));

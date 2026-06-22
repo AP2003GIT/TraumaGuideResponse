@@ -104,6 +104,7 @@ services:
       SAFETY_SERVICE_URL: ${SAFETY_SERVICE_URL:-http://safety-service:8001}
       CHAT_SERVICE_URL: ${CHAT_SERVICE_URL:-http://chat-service:8002}
       SAVE_SERVICE_URL: ${SAVE_SERVICE_URL:-http://save-service:8003}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-replace-this-development-auth-secret}
       CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     depends_on:
       safety-service:

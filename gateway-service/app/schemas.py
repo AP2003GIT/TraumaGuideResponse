@@ -73,6 +73,43 @@ class ChatResponse(BaseModel):
     )
 
 
+class AuthRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def email_must_be_normalized(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if "@" not in cleaned:
+            raise ValueError("Enter a valid email address.")
+        return cleaned
+
+
+class RegisterRequest(AuthRequest):
+    display_name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Display name cannot be blank.")
+        return cleaned
+
+
+class AuthenticatedUser(BaseModel):
+    user_id: str
+    email: str
+    display_name: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: AuthenticatedUser
+
+
 class SaveTurnRequest(BaseModel):
     user_message: str
     assistant_message: str
@@ -92,6 +129,7 @@ class SavedMessage(BaseModel):
 
 
 class SavedConversation(BaseModel):
+    user_id: str
     session_id: str
     messages: list[SavedMessage]
     created_at: str
@@ -101,6 +139,7 @@ class SavedConversation(BaseModel):
 
 
 class SavedConversationSummary(BaseModel):
+    user_id: str
     session_id: str
     title: str
     last_message_preview: str
@@ -119,6 +158,17 @@ class SavedConversationList(BaseModel):
 
 class DeleteConversationResponse(BaseModel):
     deleted: bool
+
+
+class DeleteUserDataResponse(BaseModel):
+    deleted: bool
+    deleted_conversations: int
+
+
+class AccountExport(BaseModel):
+    user: AuthenticatedUser
+    conversations: list[SavedConversation]
+    exported_at: str
 
 
 class DependencyStatus(BaseModel):

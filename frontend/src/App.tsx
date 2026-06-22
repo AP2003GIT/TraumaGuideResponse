@@ -9,12 +9,17 @@ import {
 } from "react";
 
 import {
+  deleteAccountData,
   deleteSavedConversation,
+  exportAccountData,
   getSavedConversation,
   getSavedConversations,
+  loginAccount,
+  registerAccount,
   sendChatMessage,
 } from "./api";
 import type {
+  AuthenticatedUser,
   ChatMessage,
   Role,
   RiskLevel,
@@ -28,6 +33,7 @@ interface DisplayMessage extends ChatMessage {
 }
 
 type DisplayMode = "light" | "dark";
+type AuthMode = "login" | "register";
 
 const starterPrompts = [
   "I feel overwhelmed and need a grounding exercise.",
@@ -37,6 +43,8 @@ const starterPrompts = [
 
 const SAVED_SESSION_KEY = "emotional-support-session-id";
 const DISPLAY_MODE_KEY = "emotional-support-display-mode";
+const AUTH_TOKEN_KEY = "emotional-support-auth-token";
+const AUTH_USER_KEY = "emotional-support-auth-user";
 
 function createId(): string {
   return crypto.randomUUID();
@@ -76,6 +84,44 @@ function getSavedDisplayMode(): DisplayMode {
   }
 
   return "light";
+}
+
+function getSavedAuth(): {
+  token: string | null;
+  user: AuthenticatedUser | null;
+} {
+  try {
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    const rawUser = localStorage.getItem(AUTH_USER_KEY);
+    if (!token || !rawUser) {
+      return { token: null, user: null };
+    }
+
+    return {
+      token,
+      user: JSON.parse(rawUser) as AuthenticatedUser,
+    };
+  } catch {
+    return { token: null, user: null };
+  }
+}
+
+function saveAuth(token: string, user: AuthenticatedUser) {
+  try {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  } catch {
+    // Auth remains available until the page reloads.
+  }
+}
+
+function clearAuth() {
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
+  } catch {
+    // Local storage is best effort.
+  }
 }
 
 function toDisplayMessage(message: SavedChatMessage): DisplayMessage {
@@ -253,18 +299,138 @@ function MessageContent({
           );
         }
 
-        return (
-          <p key={index}>{renderInlineMarkdown(block.text)}</p>
-        );
+        return <p key={index}>{renderInlineMarkdown(block.text)}</p>;
       })}
     </div>
   );
 }
 
+function AuthPanel({
+  mode,
+  onModeChange,
+  onSubmit,
+  isSubmitting,
+  error,
+}: {
+  mode: AuthMode;
+  onModeChange: (mode: AuthMode) => void;
+  onSubmit: (
+    mode: AuthMode,
+    displayName: string,
+    email: string,
+    password: string,
+  ) => Promise<void>;
+  isSubmitting: boolean;
+  error: string | null;
+}) {
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void onSubmit(mode, displayName, email, password);
+  }
+
+  return (
+    <main className="app-shell auth-shell">
+      <section className="auth-card">
+        <div>
+          <p className="eyebrow">Safety-aware AI demo</p>
+          <h1>Emotional Support Guide</h1>
+          <p className="subtitle">
+            Sign in to keep saved chats private to your account.
+          </p>
+        </div>
+
+        <div className="segmented-control auth-toggle" role="group">
+          <button
+            type="button"
+            className={mode === "login" ? "active" : undefined}
+            onClick={() => onModeChange("login")}
+          >
+            Log in
+          </button>
+          <button
+            type="button"
+            className={mode === "register" ? "active" : undefined}
+            onClick={() => onModeChange("register")}
+          >
+            Sign up
+          </button>
+        </div>
+
+        <form className="auth-form" onSubmit={handleSubmit}>
+          {mode === "register" && (
+            <label>
+              Name
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                minLength={1}
+                maxLength={80}
+                required
+              />
+            </label>
+          )}
+
+          <label>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+          </label>
+
+          <label>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              minLength={8}
+              required
+            />
+          </label>
+
+          {error && (
+            <div className="error-banner auth-error" role="alert">
+              {error}
+            </div>
+          )}
+
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={isSubmitting}
+          >
+            {isSubmitting
+              ? "Working..."
+              : mode === "register"
+                ? "Create account"
+                : "Log in"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
+  const savedAuth = getSavedAuth();
   const [sessionId, setSessionId] = useState(getSavedSessionId);
   const [displayMode, setDisplayMode] =
     useState<DisplayMode>(getSavedDisplayMode);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authToken, setAuthToken] = useState<string | null>(
+    savedAuth.token,
+  );
+  const [currentUser, setCurrentUser] =
+    useState<AuthenticatedUser | null>(savedAuth.user);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavedChatsOpen, setIsSavedChatsOpen] = useState(false);
   const [savedChats, setSavedChats] = useState<
@@ -288,6 +454,13 @@ export default function App() {
     [messages],
   );
 
+  const hasCrisisRisk = messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      (message.riskLevel === "high" ||
+        message.riskLevel === "immediate"),
+  );
+
   useEffect(() => {
     document.documentElement.dataset.theme = displayMode;
     document.documentElement.style.colorScheme = displayMode;
@@ -300,18 +473,25 @@ export default function App() {
   }, [displayMode]);
 
   useEffect(() => {
-    if (isSavedChatsOpen) {
+    if (isSavedChatsOpen && authToken) {
       void refreshSavedChats();
     }
-  }, [isSavedChatsOpen]);
+  }, [isSavedChatsOpen, authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      return;
+    }
+
+    const token = authToken;
     let isCancelled = false;
 
     async function loadSavedConversation() {
       try {
-        const savedConversation =
-          await getSavedConversation(sessionId);
+        const savedConversation = await getSavedConversation(
+          sessionId,
+          token,
+        );
 
         if (!isCancelled && savedConversation) {
           setMessages(
@@ -332,13 +512,49 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [sessionId]);
+  }, [authToken, sessionId]);
+
+  async function handleAuthSubmit(
+    mode: AuthMode,
+    displayName: string,
+    email: string,
+    password: string,
+  ) {
+    setIsAuthenticating(true);
+    setAuthError(null);
+
+    try {
+      const response =
+        mode === "register"
+          ? await registerAccount(displayName, email, password)
+          : await loginAccount(email, password);
+
+      saveAuth(response.access_token, response.user);
+      setAuthToken(response.access_token);
+      setCurrentUser(response.user);
+      setMessages([]);
+      setError(null);
+    } catch (caughtError) {
+      setAuthError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Authentication failed.",
+      );
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }
 
   async function refreshSavedChats(showError = true) {
+    if (!authToken) {
+      return;
+    }
+
     setIsLoadingSavedChats(true);
 
     try {
-      const savedConversationList = await getSavedConversations();
+      const savedConversationList =
+        await getSavedConversations(authToken);
       setSavedChats(savedConversationList.conversations);
       setSavedChatsLimit(savedConversationList.max_saved_chats);
     } catch {
@@ -372,8 +588,12 @@ export default function App() {
   }
 
   async function deleteSavedChat(sessionIdToDelete: string) {
+    if (!authToken) {
+      return;
+    }
+
     try {
-      await deleteSavedConversation(sessionIdToDelete);
+      await deleteSavedConversation(sessionIdToDelete, authToken);
 
       if (sessionIdToDelete === sessionId) {
         startNewChat();
@@ -386,6 +606,11 @@ export default function App() {
   }
 
   async function submitMessage(rawMessage: string) {
+    if (!authToken) {
+      setError("Sign in to send and save chats.");
+      return;
+    }
+
     const message = rawMessage.trim();
 
     if (!message || isSending) {
@@ -411,6 +636,7 @@ export default function App() {
         message,
         previousHistory,
         sessionId,
+        authToken,
       );
 
       setMessages((current) => [
@@ -463,14 +689,89 @@ export default function App() {
     setDraft("");
     inputRef.current?.focus();
 
+    if (!authToken) {
+      return;
+    }
+
     try {
-      await deleteSavedConversation(sessionId);
+      await deleteSavedConversation(sessionId, authToken);
       await refreshSavedChats(false);
     } catch {
       setError(
         "The chat was cleared here, but the saved copy could not be deleted.",
       );
     }
+  }
+
+  async function exportSavedChats() {
+    if (!authToken) {
+      return;
+    }
+
+    try {
+      const exportPayload = await exportAccountData(authToken);
+      const blob = new Blob(
+        [JSON.stringify(exportPayload, null, 2)],
+        {
+          type: "application/json",
+        },
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `emotional-support-export-${new Date()
+        .toISOString()
+        .slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Saved chats could not be exported.");
+    }
+  }
+
+  async function deleteAccount() {
+    if (!authToken) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Delete this account and all saved chats? This cannot be undone.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await deleteAccountData(authToken);
+      signOut();
+    } catch {
+      setError("Account data could not be deleted.");
+    }
+  }
+
+  function signOut() {
+    clearAuth();
+    setAuthToken(null);
+    setCurrentUser(null);
+    setMessages([]);
+    setSavedChats([]);
+    setDraft("");
+    setError(null);
+    setIsSettingsOpen(false);
+    setIsSavedChatsOpen(false);
+    startNewChat();
+  }
+
+  if (!authToken || !currentUser) {
+    return (
+      <AuthPanel
+        mode={authMode}
+        onModeChange={setAuthMode}
+        onSubmit={handleAuthSubmit}
+        isSubmitting={isAuthenticating}
+        error={authError}
+      />
+    );
   }
 
   return (
@@ -481,7 +782,7 @@ export default function App() {
             <p className="eyebrow">Safety-aware AI demo</p>
             <h1>Emotional Support Guide</h1>
             <p className="subtitle">
-              General emotional support and psychoeducation.
+              Signed in as {currentUser.display_name}.
             </p>
           </div>
 
@@ -566,7 +867,7 @@ export default function App() {
 
             {isLoadingSavedChats ? (
               <div className="saved-chats-empty">
-                Loading saved chats…
+                Loading saved chats...
               </div>
             ) : savedChats.length === 0 ? (
               <div className="saved-chats-empty">
@@ -678,6 +979,57 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            <div className="setting-row">
+              <div>
+                <h3>Account</h3>
+                <p>{currentUser.email}</p>
+              </div>
+
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={signOut}
+              >
+                Log out
+              </button>
+            </div>
+
+            <div className="setting-row">
+              <div>
+                <h3>Privacy</h3>
+                <p>Export saved chats or delete your account data.</p>
+              </div>
+
+              <div className="privacy-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void exportSavedChats()}
+                >
+                  Export chats
+                </button>
+
+                <button
+                  className="danger-button"
+                  type="button"
+                  onClick={() => void deleteAccount()}
+                >
+                  Delete account
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {hasCrisisRisk && (
+          <section className="crisis-panel" role="alert">
+            <strong>Immediate support is available.</strong>
+            <p>
+              If you might hurt yourself or someone else, call emergency
+              services now. In the U.S., call or text 988, or use the
+              988 Lifeline chat for 24/7 crisis support.
+            </p>
           </section>
         )}
 
@@ -685,7 +1037,7 @@ export default function App() {
           This assistant is not a therapist, diagnostic tool, or
           emergency service. Do not share identifying or highly
           sensitive information in this development demo. Chats are
-          saved for up to 10 days.
+          saved to your account for up to 10 days.
         </div>
 
         <div
@@ -747,7 +1099,7 @@ export default function App() {
           {isSending && (
             <article className="message assistant loading-message">
               <strong>Guide</strong>
-              <p>Thinking carefully…</p>
+              <p>Thinking carefully...</p>
             </article>
           )}
         </div>
@@ -767,7 +1119,7 @@ export default function App() {
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Write what is happening or ask for a coping strategy…"
+            placeholder="Write what is happening or ask for a coping strategy..."
             maxLength={4000}
             rows={4}
             disabled={isSending}
@@ -780,7 +1132,7 @@ export default function App() {
               type="submit"
               disabled={!draft.trim() || isSending}
             >
-              {isSending ? "Sending…" : "Send"}
+              {isSending ? "Sending..." : "Send"}
             </button>
           </div>
         </form>

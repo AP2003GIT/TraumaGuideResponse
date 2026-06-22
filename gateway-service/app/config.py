@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     chat_service_url: str = "http://127.0.0.1:8002"
     save_service_url: str = "http://127.0.0.1:8003"
     request_timeout_seconds: float = 30.0
+    auth_token_secret: str = "replace-this-development-auth-secret"
+    auth_token_minutes: int = 60 * 24 * 7
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

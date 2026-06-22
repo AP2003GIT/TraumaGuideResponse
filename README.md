@@ -32,22 +32,27 @@ The browser communicates only with the gateway. The gateway always calls the
 safety service first. High or immediate-risk messages receive a controlled
 safety response, while standard and elevated-risk messages are forwarded to the
 chat service. Completed exchanges are stored by the save service in PostgreSQL.
-The database keeps up to 10 saved chat sessions, and each session expires after
-10 days by default.
+Saved chat sessions are tied to the signed-in user account. The database keeps
+up to 10 saved chat sessions per user, and each session expires after 10 days
+by default.
 
 ## Current Features
 
 * AI-powered emotional-support chat
+* Sign up, login, and logout
+* User-scoped saved chat history
 * Multi-turn conversation history
 * Structured risk classification
 * Controlled high-risk response routing
 * PostgreSQL-backed saved chat sessions
-* Maximum of 10 saved chat sessions
+* Maximum of 10 saved chat sessions per user
 * 10-day saved-chat retention window
 * Clear-chat action that also deletes the saved conversation
 * Saved chats screen for reopening previous conversations
+* Account export and account-data deletion controls
 * Settings panel with General display mode controls
 * Light and dark display modes saved on the user's device
+* Crisis-resource banner for high and immediate risk responses
 * Assistant message formatting for paragraphs, numbered lists, bullets, and
   bold text
 * Separate gateway, safety, chat, and save services
@@ -59,21 +64,24 @@ The database keeps up to 10 saved chat sessions, and each session expires after
 
 ### Frontend
 
-The React frontend provides the chat interface, restores the saved chat session,
-and sends recent conversation history with every new message. The Settings
-panel includes a General display mode control for switching between light and
-dark mode. The Saved chats screen lists the currently retained conversations,
-shows preview and expiry details, and lets the user reopen or delete saved
-chats.
+The React frontend provides sign up and login, the chat interface, saved-chat
+restoration, and recent conversation history with every new message. The
+Settings panel includes General display mode controls, account logout, saved
+chat export, and account-data deletion. The Saved chats screen lists the
+currently retained conversations for the signed-in user, shows preview and
+expiry details, and lets the user reopen or delete saved chats.
 
 ### Gateway Service
 
 The gateway is the public backend entry point. It:
 
 * receives requests from the frontend;
+* issues signed bearer tokens after account registration or login;
+* protects chat and saved-chat endpoints;
 * sends every message to the safety service;
 * forwards standard and elevated-risk messages to the chat service;
-* saves completed exchanges through the save service;
+* saves completed exchanges through the save service under the authenticated
+  user;
 * returns one unified response to the frontend.
 
 ### Safety Service
@@ -101,9 +109,11 @@ The chat service:
 
 ### Save Service
 
-The save service stores local chat sessions in PostgreSQL. It prunes older
-sessions after `CHAT_MAX_SAVED_CHATS`, which defaults to 10, and expires saved
-conversations after `CHAT_RETENTION_DAYS`, which defaults to 10.
+The save service stores accounts and local chat sessions in PostgreSQL.
+Passwords are stored as salted PBKDF2 hashes. Saved chats are scoped to a user,
+older sessions are pruned after `CHAT_MAX_SAVED_CHATS`, which defaults to 10,
+and saved conversations expire after `CHAT_RETENTION_DAYS`, which defaults to
+10.
 
 ## Technology Stack
 
@@ -140,6 +150,12 @@ Add your Gemini API key:
 GEMINI_API_KEY=your_api_key
 ```
 
+For local development, you can also set a gateway token secret:
+
+```env
+AUTH_TOKEN_SECRET=replace-this-with-a-long-random-development-secret
+```
+
 Start the complete application:
 
 ```bash
@@ -174,7 +190,7 @@ Register a new server in pgAdmin4 with:
 * Username: `support_app`
 * Password: `support_app_dev_password`
 
-The main tables are `conversations` and `messages`.
+The main tables are `users`, `conversations`, and `messages`.
 
 ## Test Each Service Independently
 
@@ -206,7 +222,11 @@ The chat service intentionally rejects `high` and `immediate` risk levels.
 
 ### Gateway
 
-Open http://localhost:8000/docs and test `POST /api/chat`:
+Open http://localhost:8000/docs and test `POST /api/chat`.
+
+First create an account with `POST /api/auth/register` or sign in with
+`POST /api/auth/login`, then use the returned bearer token in the `Authorize`
+button.
 
 ```json
 {
@@ -219,11 +239,11 @@ Open http://localhost:8000/docs and test `POST /api/chat`:
 ### Save service
 
 Open http://localhost:8003/docs and test
-`POST /internal/conversations/{session_id}/turns`.
+`POST /internal/users/{user_id}/conversations/{session_id}/turns`.
 
 Saved conversations are stored in PostgreSQL. Older sessions are pruned after
-`CHAT_MAX_SAVED_CHATS`, which defaults to 10, and each saved session expires
-after `CHAT_RETENTION_DAYS`, which defaults to 10.
+`CHAT_MAX_SAVED_CHATS`, which defaults to 10 per user, and each saved session
+expires after `CHAT_RETENTION_DAYS`, which defaults to 10.
 
 ## Manual PyCharm Development
 
@@ -316,7 +336,6 @@ Before real-world deployment, add:
 * clinician-reviewed crisis copy and escalation rules;
 * verified country-specific emergency resources;
 * comprehensive multilingual safety evaluation;
-* authentication and authorization for internal endpoints;
 * rate limiting;
 * secrets management;
 * encrypted storage and explicit retention controls;

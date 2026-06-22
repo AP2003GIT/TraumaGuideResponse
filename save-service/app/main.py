@@ -5,15 +5,27 @@ from fastapi import FastAPI, HTTPException, Path, Request, status
 
 from app.config import get_settings
 from app.schemas import (
+    AccountExport,
+    AuthRequest,
+    AuthenticatedUser,
     DeleteConversationResponse,
+    DeleteUserDataResponse,
+    RegisterRequest,
     SavedConversation,
     SavedConversationList,
     SaveTurnRequest,
 )
-from app.storage import ChatStore, ConversationNotFoundError
+from app.storage import (
+    AccountAlreadyExistsError,
+    ChatStore,
+    ConversationNotFoundError,
+    InvalidCredentialsError,
+    UserNotFoundError,
+)
 
 settings = get_settings()
 SessionId = Annotated[str, Path(min_length=1, max_length=120)]
+UserId = Annotated[str, Path(min_length=1, max_length=120)]
 
 
 @asynccontextmanager
@@ -66,38 +78,139 @@ async def health(request: Request) -> dict[str, str]:
 
 
 @app.post(
-    "/internal/conversations/{session_id}/turns",
+    "/internal/auth/register",
+    response_model=AuthenticatedUser,
+    tags=["internal"],
+)
+async def register_user(
+    payload: RegisterRequest,
+    request: Request,
+) -> AuthenticatedUser:
+    try:
+        return get_store(request).create_user(payload)
+    except AccountAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with that email already exists.",
+        ) from exc
+
+
+@app.post(
+    "/internal/auth/login",
+    response_model=AuthenticatedUser,
+    tags=["internal"],
+)
+async def login_user(
+    payload: AuthRequest,
+    request: Request,
+) -> AuthenticatedUser:
+    try:
+        return get_store(request).authenticate_user(payload)
+    except InvalidCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        ) from exc
+
+
+@app.get(
+    "/internal/users/{user_id}",
+    response_model=AuthenticatedUser,
+    tags=["internal"],
+)
+async def get_user(
+    user_id: UserId,
+    request: Request,
+) -> AuthenticatedUser:
+    try:
+        return get_store(request).get_user(user_id)
+    except UserNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        ) from exc
+
+
+@app.get(
+    "/internal/users/{user_id}/export",
+    response_model=AccountExport,
+    tags=["internal"],
+)
+async def export_user_data(
+    user_id: UserId,
+    request: Request,
+) -> AccountExport:
+    try:
+        return get_store(request).export_user_data(user_id)
+    except UserNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        ) from exc
+
+
+@app.delete(
+    "/internal/users/{user_id}",
+    response_model=DeleteUserDataResponse,
+    tags=["internal"],
+)
+async def delete_user_data(
+    user_id: UserId,
+    request: Request,
+) -> DeleteUserDataResponse:
+    deleted, deleted_conversations = get_store(request).delete_user_data(
+        user_id,
+    )
+    return DeleteUserDataResponse(
+        deleted=deleted,
+        deleted_conversations=deleted_conversations,
+    )
+
+
+@app.post(
+    "/internal/users/{user_id}/conversations/{session_id}/turns",
     response_model=SavedConversation,
     tags=["internal"],
 )
 async def save_turn(
+    user_id: UserId,
     session_id: SessionId,
     payload: SaveTurnRequest,
     request: Request,
 ) -> SavedConversation:
-    return get_store(request).save_turn(session_id, payload)
+    try:
+        return get_store(request).save_turn(user_id, session_id, payload)
+    except (ConversationNotFoundError, UserNotFoundError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Saved conversation not found.",
+        ) from exc
 
 
 @app.get(
-    "/internal/conversations",
+    "/internal/users/{user_id}/conversations",
     response_model=SavedConversationList,
     tags=["internal"],
 )
-async def list_conversations(request: Request) -> SavedConversationList:
-    return get_store(request).list_conversations()
+async def list_conversations(
+    user_id: UserId,
+    request: Request,
+) -> SavedConversationList:
+    return get_store(request).list_conversations(user_id)
 
 
 @app.get(
-    "/internal/conversations/{session_id}",
+    "/internal/users/{user_id}/conversations/{session_id}",
     response_model=SavedConversation,
     tags=["internal"],
 )
 async def get_conversation(
+    user_id: UserId,
     session_id: SessionId,
     request: Request,
 ) -> SavedConversation:
     try:
-        return get_store(request).get_conversation(session_id)
+        return get_store(request).get_conversation(user_id, session_id)
     except ConversationNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -106,13 +219,14 @@ async def get_conversation(
 
 
 @app.delete(
-    "/internal/conversations/{session_id}",
+    "/internal/users/{user_id}/conversations/{session_id}",
     response_model=DeleteConversationResponse,
     tags=["internal"],
 )
 async def delete_conversation(
+    user_id: UserId,
     session_id: SessionId,
     request: Request,
 ) -> DeleteConversationResponse:
-    deleted = get_store(request).delete_conversation(session_id)
+    deleted = get_store(request).delete_conversation(user_id, session_id)
     return DeleteConversationResponse(deleted=deleted)

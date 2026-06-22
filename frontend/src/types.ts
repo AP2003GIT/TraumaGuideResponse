@@ -21,6 +21,18 @@ export interface ChatResponse {
   disclaimer: string;
 }
 
+export interface AuthenticatedUser {
+  user_id: string;
+  email: string;
+  display_name: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: "bearer";
+  user: AuthenticatedUser;
+}
+
 export interface SavedChatMessage extends ChatMessage {
   id: string;
   risk_level: RiskLevel | null;
@@ -30,6 +42,7 @@ export interface SavedChatMessage extends ChatMessage {
 }
 
 export interface SavedConversation {
+  user_id: string;
   session_id: string;
   messages: SavedChatMessage[];
   created_at: string;
@@ -39,6 +52,7 @@ export interface SavedConversation {
 }
 
 export interface SavedConversationSummary {
+  user_id: string;
   session_id: string;
   title: string;
   last_message_preview: string;
@@ -53,4 +67,10 @@ export interface SavedConversationList {
   conversations: SavedConversationSummary[];
   max_saved_chats: number;
   retention_days: number;
+}
+
+export interface AccountExport {
+  user: AuthenticatedUser;
+  conversations: SavedConversation[];
+  exported_at: string;
 }
