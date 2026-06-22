@@ -1,8 +1,10 @@
 import type {
   AccountExport,
+  AdminDashboard,
   AuthResponse,
   ChatMessage,
   ChatResponse,
+  PasswordResetRequestResponse,
   SavedConversation,
   SavedConversationList,
 } from "./types";
@@ -69,6 +71,65 @@ export async function continueAsDeveloper(): Promise<AuthResponse> {
   } catch {
     return registerAccount(displayName, email, password);
   }
+}
+
+export async function requestPasswordReset(
+  email: string,
+): Promise<PasswordResetRequestResponse> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/auth/password-reset/request`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as PasswordResetRequestResponse;
+}
+
+export async function confirmPasswordReset(
+  resetToken: string,
+  newPassword: string,
+): Promise<AuthResponse> {
+  return authRequest("/api/auth/password-reset/confirm", {
+    reset_token: resetToken,
+    new_password: newPassword,
+  });
+}
+
+export async function updateAccountProfile(
+  token: string,
+  displayName: string,
+  email: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/account/profile`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({
+      display_name: displayName,
+      email,
+      current_password: currentPassword || null,
+      new_password: newPassword || null,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as AuthResponse;
 }
 
 async function authRequest(
@@ -192,4 +253,18 @@ export async function deleteAccountData(token: string): Promise<void> {
   if (!response.ok) {
     throw new Error(await getErrorMessage(response));
   }
+}
+
+export async function getAdminDashboard(
+  token: string,
+): Promise<AdminDashboard> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/dashboard`, {
+    headers: authHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as AdminDashboard;
 }

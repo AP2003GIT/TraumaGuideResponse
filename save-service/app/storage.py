@@ -11,8 +11,13 @@ from psycopg.rows import dict_row
 
 from app.schemas import (
     AccountExport,
+    AdminSummary,
     AuthRequest,
     AuthenticatedUser,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    PasswordResetRequestResponse,
+    ProfileUpdateRequest,
     RegisterRequest,
     SaveTurnRequest,
     SavedConversation,
@@ -27,6 +32,10 @@ class AccountAlreadyExistsError(ValueError):
 
 
 class InvalidCredentialsError(ValueError):
+    pass
+
+
+class InvalidResetTokenError(ValueError):
     pass
 
 
@@ -105,6 +114,19 @@ class ChatStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL
+                        REFERENCES users(user_id)
+                        ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    used_at TIMESTAMPTZ
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_users_email
                     ON users(email)
                 """
@@ -127,7 +149,14 @@ class ChatStore:
                     ON messages(session_id, created_at, turn_position)
                 """
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
+                    ON password_reset_tokens(user_id, expires_at)
+                """
+            )
             self._cleanup_expired(connection, self._now())
+            self._cleanup_reset_tokens(connection, self._now())
 
     def health_check(self) -> None:
         with self._connect() as connection:
@@ -208,6 +237,165 @@ class ChatStore:
             user_id=user["user_id"],
             email=user["email"],
             display_name=user["display_name"],
+        )
+
+    def update_user_profile(
+        self,
+        user_id: str,
+        payload: ProfileUpdateRequest,
+    ) -> AuthenticatedUser:
+        with self._connect() as connection:
+            user = connection.execute(
+                """
+                SELECT user_id, password_hash
+                FROM users
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            ).fetchone()
+            if user is None:
+                raise UserNotFoundError(user_id)
+
+            password_hash = user["password_hash"]
+            if payload.new_password:
+                if not payload.current_password or not self._verify_password(
+                    payload.current_password,
+                    password_hash,
+                ):
+                    raise InvalidCredentialsError(
+                        "Current password is required.",
+                    )
+                password_hash = self._hash_password(payload.new_password)
+
+            try:
+                updated = connection.execute(
+                    """
+                    UPDATE users
+                    SET
+                        display_name = %s,
+                        email = %s,
+                        password_hash = %s
+                    WHERE user_id = %s
+                    RETURNING user_id, email, display_name
+                    """,
+                    (
+                        payload.display_name,
+                        payload.email,
+                        password_hash,
+                        user_id,
+                    ),
+                ).fetchone()
+            except psycopg.errors.UniqueViolation as exc:
+                raise AccountAlreadyExistsError(payload.email) from exc
+
+        if updated is None:
+            raise UserNotFoundError(user_id)
+
+        return AuthenticatedUser(
+            user_id=updated["user_id"],
+            email=updated["email"],
+            display_name=updated["display_name"],
+        )
+
+    def request_password_reset(
+        self,
+        payload: PasswordResetRequest,
+    ) -> PasswordResetRequestResponse:
+        now = self._now()
+        token = secrets.token_urlsafe(32)
+
+        with self._connect() as connection:
+            self._cleanup_reset_tokens(connection, now)
+            user = connection.execute(
+                """
+                SELECT user_id
+                FROM users
+                WHERE email = %s
+                """,
+                (payload.email,),
+            ).fetchone()
+
+            if user is None:
+                return PasswordResetRequestResponse(
+                    accepted=True,
+                    dev_reset_token=None,
+                )
+
+            connection.execute(
+                """
+                INSERT INTO password_reset_tokens (
+                    token_hash,
+                    user_id,
+                    created_at,
+                    expires_at,
+                    used_at
+                )
+                VALUES (%s, %s, %s, %s, NULL)
+                """,
+                (
+                    self._hash_reset_token(token),
+                    user["user_id"],
+                    now,
+                    now + timedelta(minutes=30),
+                ),
+            )
+
+        return PasswordResetRequestResponse(
+            accepted=True,
+            dev_reset_token=token,
+        )
+
+    def confirm_password_reset(
+        self,
+        payload: PasswordResetConfirmRequest,
+    ) -> AuthenticatedUser:
+        now = self._now()
+        token_hash = self._hash_reset_token(payload.reset_token)
+
+        with self._connect() as connection:
+            token = connection.execute(
+                """
+                SELECT token_hash, user_id
+                FROM password_reset_tokens
+                WHERE
+                    token_hash = %s
+                    AND used_at IS NULL
+                    AND expires_at > %s
+                """,
+                (token_hash, now),
+            ).fetchone()
+
+            if token is None:
+                raise InvalidResetTokenError("Invalid reset token.")
+
+            updated = connection.execute(
+                """
+                UPDATE users
+                SET password_hash = %s
+                WHERE user_id = %s
+                RETURNING user_id, email, display_name
+                """,
+                (
+                    self._hash_password(payload.new_password),
+                    token["user_id"],
+                ),
+            ).fetchone()
+            connection.execute(
+                """
+                UPDATE password_reset_tokens
+                SET used_at = %s
+                WHERE token_hash = %s
+                """,
+                (now, token_hash),
+            )
+
+        if updated is None:
+            raise InvalidResetTokenError("Invalid reset token.")
+
+        return AuthenticatedUser(
+            user_id=updated["user_id"],
+            email=updated["email"],
+            display_name=updated["display_name"],
         )
 
     def save_turn(
@@ -504,6 +692,41 @@ class ChatStore:
 
         return deleted_user > 0, deleted_conversations
 
+    def admin_summary(self) -> AdminSummary:
+        now = self._now()
+
+        with self._connect() as connection:
+            self._cleanup_expired(connection, now)
+            self._cleanup_reset_tokens(connection, now)
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM users)::INTEGER AS users,
+                    (
+                        SELECT COUNT(*)
+                        FROM conversations
+                        WHERE user_id IS NOT NULL
+                    )::INTEGER AS conversations,
+                    (SELECT COUNT(*) FROM messages)::INTEGER AS messages,
+                    (
+                        SELECT COUNT(*)
+                        FROM conversations
+                        WHERE expires_at <= %s
+                    )::INTEGER AS expiring_soon
+                """,
+                (now + timedelta(days=2),),
+            ).fetchone()
+
+        return AdminSummary(
+            users=row["users"],
+            conversations=row["conversations"],
+            messages=row["messages"],
+            expiring_soon=row["expiring_soon"],
+            retention_days=self.retention_days,
+            max_saved_chats=self.max_saved_chats,
+            generated_at=now,
+        )
+
     def _connect(self) -> psycopg.Connection:
         return psycopg.connect(self.database_url, row_factory=dict_row)
 
@@ -526,6 +749,19 @@ class ChatStore:
     ) -> None:
         connection.execute(
             "DELETE FROM conversations WHERE expires_at <= %s",
+            (now,),
+        )
+
+    def _cleanup_reset_tokens(
+        self,
+        connection: psycopg.Connection,
+        now: datetime,
+    ) -> None:
+        connection.execute(
+            """
+            DELETE FROM password_reset_tokens
+            WHERE expires_at <= %s OR used_at IS NOT NULL
+            """,
             (now,),
         )
 
@@ -585,6 +821,10 @@ class ChatStore:
             iterations,
         ).hex()
         return f"pbkdf2_sha256${iterations}${salt}${digest}"
+
+    @staticmethod
+    def _hash_reset_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _verify_password(password: str, password_hash: str) -> bool:

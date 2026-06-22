@@ -33,6 +33,11 @@ export interface AuthResponse {
   user: AuthenticatedUser;
 }
 
+export interface PasswordResetRequestResponse {
+  accepted: boolean;
+  dev_reset_token: string | null;
+}
+
 export interface SavedChatMessage extends ChatMessage {
   id: string;
   risk_level: RiskLevel | null;
@@ -73,4 +78,26 @@ export interface AccountExport {
   user: AuthenticatedUser;
   conversations: SavedConversation[];
   exported_at: string;
+}
+
+export interface DependencyStatus {
+  gateway: string;
+  safety_service: string;
+  chat_service: string;
+  save_service: string;
+}
+
+export interface AdminSummary {
+  users: number;
+  conversations: number;
+  messages: number;
+  expiring_soon: number;
+  retention_days: number;
+  max_saved_chats: number;
+  generated_at: string;
+}
+
+export interface AdminDashboard {
+  dependencies: DependencyStatus;
+  storage: AdminSummary;
 }

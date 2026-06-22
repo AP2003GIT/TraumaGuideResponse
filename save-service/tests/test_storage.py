@@ -4,7 +4,14 @@ from uuid import uuid4
 
 import pytest
 
-from app.schemas import RegisterRequest, SaveTurnRequest
+from app.schemas import (
+    AuthRequest,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    ProfileUpdateRequest,
+    RegisterRequest,
+    SaveTurnRequest,
+)
 from app.storage import ChatStore, ConversationNotFoundError
 
 
@@ -135,10 +142,94 @@ def test_oldest_conversations_are_pruned() -> None:
         )
 
     assert (
-        store.get_conversation(user_id, f"{prefix}-1").session_id
+        store.get_conversation(
+            user_id,
+            f"{prefix}-1",
+            now=datetime(2026, 1, 4, tzinfo=timezone.utc),
+        ).session_id
         == f"{prefix}-1"
     )
     assert (
-        store.get_conversation(user_id, f"{prefix}-2").session_id
+        store.get_conversation(
+            user_id,
+            f"{prefix}-2",
+            now=datetime(2026, 1, 4, tzinfo=timezone.utc),
+        ).session_id
         == f"{prefix}-2"
     )
+
+
+def test_profile_update_and_password_reset() -> None:
+    store = create_store()
+    store.initialize()
+    email = f"test-{uuid4()}@example.com"
+    user = store.create_user(
+        RegisterRequest(
+            display_name="Original",
+            email=email,
+            password="test-password",
+        )
+    )
+
+    updated = store.update_user_profile(
+        user.user_id,
+        ProfileUpdateRequest(
+            display_name="Updated",
+            email=email,
+            current_password="test-password",
+            new_password="updated-password",
+        ),
+    )
+
+    assert updated.display_name == "Updated"
+    assert (
+        store.authenticate_user(
+            AuthRequest(email=email, password="updated-password")
+        ).user_id
+        == user.user_id
+    )
+
+    reset_request = store.request_password_reset(
+        PasswordResetRequest(email=email)
+    )
+    assert reset_request.dev_reset_token
+
+    reset_user = store.confirm_password_reset(
+        PasswordResetConfirmRequest(
+            reset_token=reset_request.dev_reset_token,
+            new_password="reset-password",
+        )
+    )
+
+    assert reset_user.user_id == user.user_id
+    assert (
+        store.authenticate_user(
+            AuthRequest(email=email, password="reset-password")
+        ).user_id
+        == user.user_id
+    )
+
+
+def test_admin_summary_counts_storage() -> None:
+    store = create_store()
+    store.initialize()
+    user_id = create_user(store)
+    session_id = f"test-{uuid4()}"
+
+    store.save_turn(
+        user_id,
+        session_id,
+        SaveTurnRequest(
+            user_message="Hello.",
+            assistant_message="Hello back.",
+            risk_level="standard",
+            model=None,
+            request_id="request-1",
+        ),
+    )
+
+    summary = store.admin_summary()
+
+    assert summary.users >= 1
+    assert summary.conversations >= 1
+    assert summary.messages >= 2

@@ -40,6 +40,8 @@ by default.
 
 * AI-powered emotional-support chat
 * Sign up, login, and logout
+* Local development password reset-code flow
+* User profile editing for display name, email, and password
 * Remember me checkbox for persistent local autologin
 * Optional local developer login shortcut
 * User-scoped saved chat history
@@ -52,8 +54,11 @@ by default.
 * Clear-chat action that also deletes the saved conversation
 * Saved chats sidebar with search and active chat highlighting
 * Message timestamps, copy, retry, and regenerate controls
-* Account export and account-data deletion controls
-* Tabbed Settings panel with General, Account, Privacy, and Safety sections
+* Account export with scope and date filters
+* Account-data deletion controls
+* Tabbed Settings panel with General, Account, Privacy, Safety, and Admin
+  sections
+* Internal admin dashboard for service health and storage metrics
 * Light and dark display modes saved on the user's device
 * Crisis-resource panel with 988 call, text, and chat actions
 * Assistant message formatting for paragraphs, numbered lists, bullets, and
@@ -67,13 +72,14 @@ by default.
 
 ### Frontend
 
-The React frontend provides sign up and login, the chat interface, saved-chat
-restoration, and recent conversation history with every new message. The
-Settings panel includes General display mode controls, account logout, saved
-chat export, account-data deletion, and safety resources. The saved-chat
-sidebar lists the currently retained conversations for the signed-in user,
-supports search, shows preview and expiry details, and lets the user reopen or
-delete saved chats.
+The React frontend provides sign up and login, password reset, profile editing,
+the chat interface, saved-chat restoration, and recent conversation history
+with every new message. The Settings panel includes General display mode
+controls, account logout, filtered saved-chat export, account-data deletion,
+safety resources, and an internal admin dashboard. The saved-chat sidebar lists
+the currently retained conversations for the signed-in user, supports search,
+shows preview and expiry details, and lets the user reopen or delete saved
+chats.
 
 ### Gateway Service
 
@@ -81,6 +87,7 @@ The gateway is the public backend entry point. It:
 
 * receives requests from the frontend;
 * issues signed bearer tokens after account registration or login;
+* supports local password reset and profile updates;
 * protects chat and saved-chat endpoints;
 * sends every message to the safety service;
 * forwards standard and elevated-risk messages to the chat service;
@@ -114,10 +121,10 @@ The chat service:
 ### Save Service
 
 The save service stores accounts and local chat sessions in PostgreSQL.
-Passwords are stored as salted PBKDF2 hashes. Saved chats are scoped to a user,
-older sessions are pruned after `CHAT_MAX_SAVED_CHATS`, which defaults to 10,
-and saved conversations expire after `CHAT_RETENTION_DAYS`, which defaults to
-10.
+Passwords are stored as salted PBKDF2 hashes. Password reset codes are stored
+as hashes and expire after 30 minutes. Saved chats are scoped to a user, older
+sessions are pruned after `CHAT_MAX_SAVED_CHATS`, which defaults to 10, and
+saved conversations expire after `CHAT_RETENTION_DAYS`, which defaults to 10.
 
 ## Technology Stack
 
@@ -201,7 +208,8 @@ Register a new server in pgAdmin4 with:
 * Username: `support_app`
 * Password: `support_app_dev_password`
 
-The main tables are `users`, `conversations`, and `messages`.
+The main tables are `users`, `password_reset_tokens`, `conversations`, and
+`messages`.
 
 ## Test Each Service Independently
 
@@ -333,6 +341,13 @@ Run these from each service folder:
 ```powershell
 pytest
 ```
+
+The GitHub Actions workflow in `.github/workflows/python-app.yml` runs:
+
+* Python 3.12 compile and pytest checks for each backend service;
+* PostgreSQL-backed save-service tests;
+* frontend `npm run build`;
+* Docker Compose image builds.
 
 ## Important Notice
 

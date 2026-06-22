@@ -9,17 +9,22 @@ import {
 } from "react";
 
 import {
+  confirmPasswordReset,
   deleteAccountData,
   deleteSavedConversation,
   exportAccountData,
+  getAdminDashboard,
   getSavedConversation,
   getSavedConversations,
   continueAsDeveloper,
   loginAccount,
   registerAccount,
+  requestPasswordReset,
   sendChatMessage,
+  updateAccountProfile,
 } from "./api";
 import type {
+  AdminDashboard,
   AuthenticatedUser,
   ChatMessage,
   Role,
@@ -37,7 +42,8 @@ interface DisplayMessage extends ChatMessage {
 
 type DisplayMode = "light" | "dark";
 type AuthMode = "login" | "register";
-type SettingsTab = "general" | "account" | "privacy" | "safety";
+type SettingsTab = "general" | "account" | "privacy" | "safety" | "admin";
+type ExportScope = "all" | "current";
 
 const starterPrompts = [
   "I feel overwhelmed and need a grounding exercise.",
@@ -151,6 +157,14 @@ function clearAuth() {
     sessionStorage.removeItem(AUTH_USER_KEY);
   } catch {
     // Local storage is best effort.
+  }
+}
+
+function isAuthRemembered(): boolean {
+  try {
+    return Boolean(localStorage.getItem(AUTH_TOKEN_KEY));
+  } catch {
+    return false;
   }
 }
 
@@ -348,6 +362,8 @@ function AuthPanel({
   onModeChange,
   onSubmit,
   onDevLogin,
+  onRequestReset,
+  onConfirmReset,
   isSubmitting,
   error,
 }: {
@@ -361,6 +377,12 @@ function AuthPanel({
     rememberMe: boolean,
   ) => Promise<void>;
   onDevLogin: (rememberMe: boolean) => Promise<void>;
+  onRequestReset: (email: string) => Promise<string | null>;
+  onConfirmReset: (
+    resetToken: string,
+    newPassword: string,
+    rememberMe: boolean,
+  ) => Promise<void>;
   isSubmitting: boolean;
   error: string | null;
 }) {
@@ -369,10 +391,33 @@ function AuthPanel({
   const [password, setPassword] = useState("");
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [isResetOpen, setIsResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void onSubmit(mode, displayName, email, password, rememberMe);
+  }
+
+  async function handleResetRequest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = await onRequestReset(resetEmail || email);
+    if (token) {
+      setResetToken(token);
+      setResetNotice("Use the development reset code below.");
+    } else {
+      setResetNotice(
+        "If that email exists, a reset code has been prepared.",
+      );
+    }
+  }
+
+  async function handleResetConfirm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onConfirmReset(resetToken, resetPassword, rememberMe);
   }
 
   return (
@@ -480,6 +525,81 @@ function AuthPanel({
           </button>
         </form>
 
+        <div className="reset-login-panel">
+          <button
+            className="link-button"
+            type="button"
+            onClick={() => setIsResetOpen((current) => !current)}
+          >
+            {isResetOpen ? "Hide password reset" : "Forgot password?"}
+          </button>
+
+          {isResetOpen && (
+            <div className="reset-forms">
+              <form className="auth-form compact-auth-form" onSubmit={handleResetRequest}>
+                <label>
+                  Account email
+                  <input
+                    type="email"
+                    value={resetEmail}
+                    onChange={(event) =>
+                      setResetEmail(event.target.value)
+                    }
+                    placeholder={email || "you@example.com"}
+                    required
+                  />
+                </label>
+
+                <button
+                  className="secondary-button"
+                  type="submit"
+                  disabled={isSubmitting}
+                >
+                  Create reset code
+                </button>
+              </form>
+
+              <form className="auth-form compact-auth-form" onSubmit={handleResetConfirm}>
+                <label>
+                  Reset code
+                  <input
+                    value={resetToken}
+                    onChange={(event) =>
+                      setResetToken(event.target.value)
+                    }
+                    required
+                  />
+                </label>
+
+                <label>
+                  New password
+                  <input
+                    type="password"
+                    value={resetPassword}
+                    onChange={(event) =>
+                      setResetPassword(event.target.value)
+                    }
+                    minLength={8}
+                    required
+                  />
+                </label>
+
+                {resetNotice && (
+                  <p className="auth-notice">{resetNotice}</p>
+                )}
+
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={isSubmitting}
+                >
+                  Reset password
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
+
         {IS_DEV_LOGIN_ENABLED && (
           <div className="dev-login-panel">
             <p>Development only</p>
@@ -515,6 +635,22 @@ export default function App() {
   const [isSavedChatsOpen, setIsSavedChatsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [savedChatSearch, setSavedChatSearch] = useState("");
+  const [profileName, setProfileName] = useState(
+    savedAuth.user?.display_name ?? "",
+  );
+  const [profileEmail, setProfileEmail] = useState(
+    savedAuth.user?.email ?? "",
+  );
+  const [profileCurrentPassword, setProfileCurrentPassword] = useState("");
+  const [profileNewPassword, setProfileNewPassword] = useState("");
+  const [profileStatus, setProfileStatus] = useState<string | null>(null);
+  const [exportScope, setExportScope] = useState<ExportScope>("all");
+  const [exportFromDate, setExportFromDate] = useState("");
+  const [exportToDate, setExportToDate] = useState("");
+  const [adminDashboard, setAdminDashboard] =
+    useState<AdminDashboard | null>(null);
+  const [isLoadingAdminDashboard, setIsLoadingAdminDashboard] =
+    useState(false);
   const [savedChats, setSavedChats] = useState<
     SavedConversationSummary[]
   >([]);
@@ -581,6 +717,19 @@ export default function App() {
       void refreshSavedChats(false);
     }
   }, [authToken]);
+
+  useEffect(() => {
+    if (currentUser) {
+      setProfileName(currentUser.display_name);
+      setProfileEmail(currentUser.email);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (settingsTab === "admin" && authToken) {
+      void refreshAdminDashboard();
+    }
+  }, [settingsTab, authToken]);
 
   useEffect(() => {
     if (!authToken) {
@@ -673,6 +822,89 @@ export default function App() {
     }
   }
 
+  async function handlePasswordResetRequest(
+    email: string,
+  ): Promise<string | null> {
+    setIsAuthenticating(true);
+    setAuthError(null);
+
+    try {
+      const response = await requestPasswordReset(email);
+      return response.dev_reset_token;
+    } catch (caughtError) {
+      setAuthError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Password reset could not be started.",
+      );
+      return null;
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }
+
+  async function handlePasswordResetConfirm(
+    resetToken: string,
+    newPassword: string,
+    rememberMe: boolean,
+  ) {
+    setIsAuthenticating(true);
+    setAuthError(null);
+
+    try {
+      const response = await confirmPasswordReset(
+        resetToken,
+        newPassword,
+      );
+
+      saveAuth(response.access_token, response.user, rememberMe);
+      setAuthToken(response.access_token);
+      setCurrentUser(response.user);
+      setMessages([]);
+      setError(null);
+    } catch (caughtError) {
+      setAuthError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Password reset failed.",
+      );
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }
+
+  async function saveProfile() {
+    if (!authToken) {
+      return;
+    }
+
+    setProfileStatus(null);
+    setError(null);
+
+    try {
+      const response = await updateAccountProfile(
+        authToken,
+        profileName,
+        profileEmail,
+        profileCurrentPassword,
+        profileNewPassword,
+      );
+
+      saveAuth(response.access_token, response.user, isAuthRemembered());
+      setAuthToken(response.access_token);
+      setCurrentUser(response.user);
+      setProfileCurrentPassword("");
+      setProfileNewPassword("");
+      setProfileStatus("Profile updated.");
+    } catch (caughtError) {
+      setProfileStatus(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Profile could not be updated.",
+      );
+    }
+  }
+
   async function refreshSavedChats(showError = true) {
     if (!authToken) {
       return;
@@ -693,6 +925,22 @@ export default function App() {
       }
     } finally {
       setIsLoadingSavedChats(false);
+    }
+  }
+
+  async function refreshAdminDashboard() {
+    if (!authToken) {
+      return;
+    }
+
+    setIsLoadingAdminDashboard(true);
+
+    try {
+      setAdminDashboard(await getAdminDashboard(authToken));
+    } catch {
+      setError("Admin dashboard could not be loaded.");
+    } finally {
+      setIsLoadingAdminDashboard(false);
     }
   }
 
@@ -900,8 +1148,39 @@ export default function App() {
 
     try {
       const exportPayload = await exportAccountData(authToken);
+      const from = exportFromDate
+        ? new Date(`${exportFromDate}T00:00:00`)
+        : null;
+      const to = exportToDate
+        ? new Date(`${exportToDate}T23:59:59`)
+        : null;
+      const filteredConversations = exportPayload.conversations.filter(
+        (conversation) => {
+          if (
+            exportScope === "current" &&
+            conversation.session_id !== sessionId
+          ) {
+            return false;
+          }
+
+          const updatedAt = new Date(conversation.updated_at);
+          if (from && updatedAt < from) {
+            return false;
+          }
+
+          if (to && updatedAt > to) {
+            return false;
+          }
+
+          return true;
+        },
+      );
+      const filteredExport = {
+        ...exportPayload,
+        conversations: filteredConversations,
+      };
       const blob = new Blob(
-        [JSON.stringify(exportPayload, null, 2)],
+        [JSON.stringify(filteredExport, null, 2)],
         {
           type: "application/json",
         },
@@ -909,7 +1188,7 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `emotional-support-export-${new Date()
+      link.download = `emotional-support-${exportScope}-export-${new Date()
         .toISOString()
         .slice(0, 10)}.json`;
       link.click();
@@ -959,6 +1238,8 @@ export default function App() {
         onModeChange={setAuthMode}
         onSubmit={handleAuthSubmit}
         onDevLogin={handleDevLogin}
+        onRequestReset={handlePasswordResetRequest}
+        onConfirmReset={handlePasswordResetConfirm}
         isSubmitting={isAuthenticating}
         error={authError}
       />
@@ -1227,8 +1508,15 @@ export default function App() {
             </div>
 
             <div className="settings-tabs" role="tablist">
-              {(["general", "account", "privacy", "safety"] as SettingsTab[]).map(
-                (tabName) => (
+              {(
+                [
+                  "general",
+                  "account",
+                  "privacy",
+                  "safety",
+                  "admin",
+                ] as SettingsTab[]
+              ).map((tabName) => (
                   <button
                     key={tabName}
                     type="button"
@@ -1239,8 +1527,7 @@ export default function App() {
                   >
                     {tabName[0].toUpperCase() + tabName.slice(1)}
                   </button>
-                ),
-              )}
+                ))}
             </div>
 
             {settingsTab === "general" && (
@@ -1281,27 +1568,125 @@ export default function App() {
             )}
 
             {settingsTab === "account" && (
-              <div className="setting-row">
+              <div className="settings-form-panel">
                 <div>
-                  <h3>Account</h3>
-                  <p>{currentUser.email}</p>
+                  <h3>Profile</h3>
+                  <p>Update your local account details.</p>
                 </div>
 
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={signOut}
-                >
-                  Log out
-                </button>
+                <div className="settings-form-grid">
+                  <label>
+                    Display name
+                    <input
+                      value={profileName}
+                      onChange={(event) =>
+                        setProfileName(event.target.value)
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Email
+                    <input
+                      type="email"
+                      value={profileEmail}
+                      onChange={(event) =>
+                        setProfileEmail(event.target.value)
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Current password
+                    <input
+                      type="password"
+                      value={profileCurrentPassword}
+                      onChange={(event) =>
+                        setProfileCurrentPassword(event.target.value)
+                      }
+                      placeholder="Required for password changes"
+                    />
+                  </label>
+
+                  <label>
+                    New password
+                    <input
+                      type="password"
+                      value={profileNewPassword}
+                      onChange={(event) =>
+                        setProfileNewPassword(event.target.value)
+                      }
+                      minLength={8}
+                    />
+                  </label>
+                </div>
+
+                {profileStatus && (
+                  <p className="settings-status">{profileStatus}</p>
+                )}
+
+                <div className="privacy-actions">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => void saveProfile()}
+                  >
+                    Save profile
+                  </button>
+
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={signOut}
+                  >
+                    Log out
+                  </button>
+                </div>
               </div>
             )}
 
             {settingsTab === "privacy" && (
-              <div className="setting-row">
+              <div className="settings-form-panel">
                 <div>
                   <h3>Privacy</h3>
                   <p>Export saved chats or delete your account data.</p>
+                </div>
+
+                <div className="settings-form-grid">
+                  <label>
+                    Export scope
+                    <select
+                      value={exportScope}
+                      onChange={(event) =>
+                        setExportScope(event.target.value as ExportScope)
+                      }
+                    >
+                      <option value="all">All saved chats</option>
+                      <option value="current">Current chat only</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    From date
+                    <input
+                      type="date"
+                      value={exportFromDate}
+                      onChange={(event) =>
+                        setExportFromDate(event.target.value)
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    To date
+                    <input
+                      type="date"
+                      value={exportToDate}
+                      onChange={(event) =>
+                        setExportToDate(event.target.value)
+                      }
+                    />
+                  </label>
                 </div>
 
                 <div className="privacy-actions">
@@ -1350,6 +1735,64 @@ export default function App() {
                     Open 988 chat
                   </a>
                 </div>
+              </div>
+            )}
+
+            {settingsTab === "admin" && (
+              <div className="settings-form-panel">
+                <div className="admin-dashboard-heading">
+                  <div>
+                    <h3>Service dashboard</h3>
+                    <p>Internal development health and storage summary.</p>
+                  </div>
+
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void refreshAdminDashboard()}
+                    disabled={isLoadingAdminDashboard}
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                {isLoadingAdminDashboard ? (
+                  <p className="settings-status">Loading dashboard...</p>
+                ) : adminDashboard ? (
+                  <div className="admin-dashboard-grid">
+                    {Object.entries(adminDashboard.dependencies).map(
+                      ([service, statusText]) => (
+                        <div className="admin-metric" key={service}>
+                          <span>{service.replace("_", " ")}</span>
+                          <strong>{statusText}</strong>
+                        </div>
+                      ),
+                    )}
+
+                    <div className="admin-metric">
+                      <span>Users</span>
+                      <strong>{adminDashboard.storage.users}</strong>
+                    </div>
+                    <div className="admin-metric">
+                      <span>Conversations</span>
+                      <strong>
+                        {adminDashboard.storage.conversations}
+                      </strong>
+                    </div>
+                    <div className="admin-metric">
+                      <span>Messages</span>
+                      <strong>{adminDashboard.storage.messages}</strong>
+                    </div>
+                    <div className="admin-metric">
+                      <span>Expiring soon</span>
+                      <strong>{adminDashboard.storage.expiring_soon}</strong>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="settings-status">
+                    Open this tab to load service health.
+                  </p>
+                )}
               </div>
             )}
           </section>

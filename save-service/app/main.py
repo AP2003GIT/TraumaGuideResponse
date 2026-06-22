@@ -6,10 +6,15 @@ from fastapi import FastAPI, HTTPException, Path, Request, status
 from app.config import get_settings
 from app.schemas import (
     AccountExport,
+    AdminSummary,
     AuthRequest,
     AuthenticatedUser,
     DeleteConversationResponse,
     DeleteUserDataResponse,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    PasswordResetRequestResponse,
+    ProfileUpdateRequest,
     RegisterRequest,
     SavedConversation,
     SavedConversationList,
@@ -20,6 +25,7 @@ from app.storage import (
     ChatStore,
     ConversationNotFoundError,
     InvalidCredentialsError,
+    InvalidResetTokenError,
     UserNotFoundError,
 )
 
@@ -113,6 +119,36 @@ async def login_user(
         ) from exc
 
 
+@app.post(
+    "/internal/auth/password-reset/request",
+    response_model=PasswordResetRequestResponse,
+    tags=["internal"],
+)
+async def request_password_reset(
+    payload: PasswordResetRequest,
+    request: Request,
+) -> PasswordResetRequestResponse:
+    return get_store(request).request_password_reset(payload)
+
+
+@app.post(
+    "/internal/auth/password-reset/confirm",
+    response_model=AuthenticatedUser,
+    tags=["internal"],
+)
+async def confirm_password_reset(
+    payload: PasswordResetConfirmRequest,
+    request: Request,
+) -> AuthenticatedUser:
+    try:
+        return get_store(request).confirm_password_reset(payload)
+    except InvalidResetTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset code.",
+        ) from exc
+
+
 @app.get(
     "/internal/users/{user_id}",
     response_model=AuthenticatedUser,
@@ -124,6 +160,35 @@ async def get_user(
 ) -> AuthenticatedUser:
     try:
         return get_store(request).get_user(user_id)
+    except UserNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        ) from exc
+
+
+@app.post(
+    "/internal/users/{user_id}/profile",
+    response_model=AuthenticatedUser,
+    tags=["internal"],
+)
+async def update_user_profile(
+    user_id: UserId,
+    payload: ProfileUpdateRequest,
+    request: Request,
+) -> AuthenticatedUser:
+    try:
+        return get_store(request).update_user_profile(user_id, payload)
+    except AccountAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with that email already exists.",
+        ) from exc
+    except InvalidCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect.",
+        ) from exc
     except UserNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -165,6 +230,15 @@ async def delete_user_data(
         deleted=deleted,
         deleted_conversations=deleted_conversations,
     )
+
+
+@app.get(
+    "/internal/admin/summary",
+    response_model=AdminSummary,
+    tags=["internal"],
+)
+async def admin_summary(request: Request) -> AdminSummary:
+    return get_store(request).admin_summary()
 
 
 @app.post(

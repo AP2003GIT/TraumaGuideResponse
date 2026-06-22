@@ -55,6 +55,59 @@ class AuthenticatedUser(BaseModel):
     display_name: str
 
 
+class ProfileUpdateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+    email: str = Field(min_length=3, max_length=254)
+    current_password: str | None = Field(default=None, max_length=128)
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Display name cannot be blank.")
+        return cleaned
+
+    @field_validator("email")
+    @classmethod
+    def email_must_be_normalized(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if "@" not in cleaned:
+            raise ValueError("Enter a valid email address.")
+        return cleaned
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def email_must_be_normalized(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if "@" not in cleaned:
+            raise ValueError("Enter a valid email address.")
+        return cleaned
+
+
+class PasswordResetRequestResponse(BaseModel):
+    accepted: bool
+    dev_reset_token: str | None = None
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    reset_token: str = Field(min_length=16, max_length=200)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("reset_token")
+    @classmethod
+    def token_must_not_be_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Reset token cannot be blank.")
+        return cleaned
+
+
 class SavedMessage(BaseModel):
     id: str
     role: Role
@@ -106,3 +159,13 @@ class AccountExport(BaseModel):
     user: AuthenticatedUser
     conversations: list[SavedConversation]
     exported_at: datetime
+
+
+class AdminSummary(BaseModel):
+    users: int
+    conversations: int
+    messages: int
+    expiring_soon: int
+    retention_days: int
+    max_saved_chats: int
+    generated_at: datetime

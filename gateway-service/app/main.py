@@ -16,6 +16,8 @@ from app.clients import (
 from app.config import get_settings
 from app.schemas import (
     AccountExport,
+    AdminDashboard,
+    AdminSummary,
     AuthRequest,
     AuthResponse,
     AuthenticatedUser,
@@ -26,6 +28,10 @@ from app.schemas import (
     DeleteConversationResponse,
     DeleteUserDataResponse,
     DependencyStatus,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    PasswordResetRequestResponse,
+    ProfileUpdateRequest,
     RegisterRequest,
     RiskAssessment,
     SavedConversation,
@@ -193,6 +199,75 @@ async def login(
     )
 
 
+@app.post(
+    "/api/auth/password-reset/request",
+    response_model=PasswordResetRequestResponse,
+    tags=["auth"],
+)
+async def request_password_reset(
+    payload: PasswordResetRequest,
+    request: Request,
+) -> PasswordResetRequestResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        reset_request = await post_model(
+            client=client,
+            service_name="save-service",
+            url=(
+                f"{settings.save_service_url}/internal/auth/"
+                "password-reset/request"
+            ),
+            payload=payload,
+            response_model=PasswordResetRequestResponse,
+            request_id=request_id,
+        )
+        assert isinstance(reset_request, PasswordResetRequestResponse)
+        return reset_request
+    except DownstreamServiceError as exc:
+        raise _service_unavailable(exc, request_id)
+
+
+@app.post(
+    "/api/auth/password-reset/confirm",
+    response_model=AuthResponse,
+    tags=["auth"],
+)
+async def confirm_password_reset(
+    payload: PasswordResetConfirmRequest,
+    request: Request,
+) -> AuthResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        user = await post_model(
+            client=client,
+            service_name="save-service",
+            url=(
+                f"{settings.save_service_url}/internal/auth/"
+                "password-reset/confirm"
+            ),
+            payload=payload,
+            response_model=AuthenticatedUser,
+            request_id=request_id,
+        )
+        assert isinstance(user, AuthenticatedUser)
+    except DownstreamServiceError as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired reset code.",
+            ) from exc
+        raise _service_unavailable(exc, request_id)
+
+    return AuthResponse(
+        access_token=create_access_token(user, settings),
+        user=user,
+    )
+
+
 @app.get(
     "/api/auth/me",
     response_model=AuthenticatedUser,
@@ -202,6 +277,51 @@ async def me(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
     return user
+
+
+@app.post(
+    "/api/account/profile",
+    response_model=AuthResponse,
+    tags=["auth"],
+)
+async def update_account_profile(
+    payload: ProfileUpdateRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthResponse:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        updated_user = await post_model(
+            client=client,
+            service_name="save-service",
+            url=(
+                f"{settings.save_service_url}/internal/users/"
+                f"{user.user_id}/profile"
+            ),
+            payload=payload,
+            response_model=AuthenticatedUser,
+            request_id=request_id,
+        )
+        assert isinstance(updated_user, AuthenticatedUser)
+    except DownstreamServiceError as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with that email already exists.",
+            ) from exc
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect.",
+            ) from exc
+        raise _service_unavailable(exc, request_id)
+
+    return AuthResponse(
+        access_token=create_access_token(updated_user, settings),
+        user=updated_user,
+    )
 
 
 @app.get(
@@ -231,6 +351,38 @@ async def export_account_data(
         return export
     except DownstreamServiceError as exc:
         raise _service_unavailable(exc, request_id)
+
+
+@app.get(
+    "/api/admin/dashboard",
+    response_model=AdminDashboard,
+    tags=["admin"],
+)
+async def admin_dashboard(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AdminDashboard:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    dependencies = await dependency_health(request)
+
+    try:
+        storage = await get_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/admin/summary",
+            response_model=AdminSummary,
+            request_id=request_id,
+        )
+        assert isinstance(storage, AdminSummary)
+    except DownstreamServiceError as exc:
+        raise _service_unavailable(exc, request_id)
+
+    return AdminDashboard(
+        dependencies=dependencies,
+        storage=storage,
+    )
 
 
 @app.delete(
