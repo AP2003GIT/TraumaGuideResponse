@@ -11,6 +11,7 @@ import {
 import {
   deleteSavedConversation,
   getSavedConversation,
+  getSavedConversations,
   sendChatMessage,
 } from "./api";
 import type {
@@ -18,6 +19,7 @@ import type {
   Role,
   RiskLevel,
   SavedChatMessage,
+  SavedConversationSummary,
 } from "./types";
 
 interface DisplayMessage extends ChatMessage {
@@ -40,6 +42,14 @@ function createId(): string {
   return crypto.randomUUID();
 }
 
+function saveSessionId(sessionId: string) {
+  try {
+    localStorage.setItem(SAVED_SESSION_KEY, sessionId);
+  } catch {
+    // The session still works for the current page load.
+  }
+}
+
 function getSavedSessionId(): string {
   try {
     const existingSessionId = localStorage.getItem(SAVED_SESSION_KEY);
@@ -48,7 +58,7 @@ function getSavedSessionId(): string {
     }
 
     const sessionId = createId();
-    localStorage.setItem(SAVED_SESSION_KEY, sessionId);
+    saveSessionId(sessionId);
     return sessionId;
   } catch {
     return createId();
@@ -75,6 +85,15 @@ function toDisplayMessage(message: SavedChatMessage): DisplayMessage {
     content: message.content,
     riskLevel: message.risk_level ?? undefined,
   };
+}
+
+function formatSavedDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function normalizeAssistantContent(content: string): string {
@@ -243,10 +262,17 @@ function MessageContent({
 }
 
 export default function App() {
-  const [sessionId] = useState(getSavedSessionId);
+  const [sessionId, setSessionId] = useState(getSavedSessionId);
   const [displayMode, setDisplayMode] =
     useState<DisplayMode>(getSavedDisplayMode);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSavedChatsOpen, setIsSavedChatsOpen] = useState(false);
+  const [savedChats, setSavedChats] = useState<
+    SavedConversationSummary[]
+  >([]);
+  const [savedChatsLimit, setSavedChatsLimit] = useState(10);
+  const [isLoadingSavedChats, setIsLoadingSavedChats] =
+    useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -272,6 +298,12 @@ export default function App() {
       // The selected mode still applies for the current session.
     }
   }, [displayMode]);
+
+  useEffect(() => {
+    if (isSavedChatsOpen) {
+      void refreshSavedChats();
+    }
+  }, [isSavedChatsOpen]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -301,6 +333,57 @@ export default function App() {
       isCancelled = true;
     };
   }, [sessionId]);
+
+  async function refreshSavedChats(showError = true) {
+    setIsLoadingSavedChats(true);
+
+    try {
+      const savedConversationList = await getSavedConversations();
+      setSavedChats(savedConversationList.conversations);
+      setSavedChatsLimit(savedConversationList.max_saved_chats);
+    } catch {
+      if (showError) {
+        setError(
+          "Saved chats could not be loaded. You can still continue this conversation.",
+        );
+      }
+    } finally {
+      setIsLoadingSavedChats(false);
+    }
+  }
+
+  function startNewChat() {
+    const nextSessionId = createId();
+    saveSessionId(nextSessionId);
+    setSessionId(nextSessionId);
+    setMessages([]);
+    setDraft("");
+    setError(null);
+    setIsSavedChatsOpen(false);
+    inputRef.current?.focus();
+  }
+
+  function openSavedChat(sessionIdToOpen: string) {
+    saveSessionId(sessionIdToOpen);
+    setSessionId(sessionIdToOpen);
+    setDraft("");
+    setError(null);
+    setIsSavedChatsOpen(false);
+  }
+
+  async function deleteSavedChat(sessionIdToDelete: string) {
+    try {
+      await deleteSavedConversation(sessionIdToDelete);
+
+      if (sessionIdToDelete === sessionId) {
+        startNewChat();
+      }
+
+      await refreshSavedChats(false);
+    } catch {
+      setError("Saved chat could not be deleted.");
+    }
+  }
 
   async function submitMessage(rawMessage: string) {
     const message = rawMessage.trim();
@@ -344,6 +427,8 @@ export default function App() {
         setError(
           "Reply received, but this exchange could not be saved.",
         );
+      } else {
+        void refreshSavedChats(false);
       }
     } catch (caughtError) {
       const messageText =
@@ -380,6 +465,7 @@ export default function App() {
 
     try {
       await deleteSavedConversation(sessionId);
+      await refreshSavedChats(false);
     } catch {
       setError(
         "The chat was cleared here, but the saved copy could not be deleted.",
@@ -404,6 +490,27 @@ export default function App() {
               className="secondary-button"
               type="button"
               onClick={() =>
+                setIsSavedChatsOpen((current) => !current)
+              }
+              aria-expanded={isSavedChatsOpen}
+              aria-controls="saved-chats-panel"
+            >
+              Saved chats
+            </button>
+
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={startNewChat}
+              disabled={isSending}
+            >
+              New chat
+            </button>
+
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() =>
                 setIsSettingsOpen((current) => !current)
               }
               aria-expanded={isSettingsOpen}
@@ -422,6 +529,99 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {isSavedChatsOpen && (
+          <section
+            id="saved-chats-panel"
+            className="saved-chats-panel"
+            aria-labelledby="saved-chats-heading"
+          >
+            <div className="saved-chats-header">
+              <div>
+                <h2 id="saved-chats-heading">Saved chats</h2>
+                <p>
+                  {savedChats.length}/{savedChatsLimit} saved
+                </p>
+              </div>
+
+              <div className="saved-chats-actions">
+                <button
+                  className="secondary-button compact-button"
+                  type="button"
+                  onClick={startNewChat}
+                  disabled={isSending}
+                >
+                  New chat
+                </button>
+
+                <button
+                  className="secondary-button compact-button"
+                  type="button"
+                  onClick={() => setIsSavedChatsOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {isLoadingSavedChats ? (
+              <div className="saved-chats-empty">
+                Loading saved chats…
+              </div>
+            ) : savedChats.length === 0 ? (
+              <div className="saved-chats-empty">
+                Saved chats will appear here after a reply is stored.
+              </div>
+            ) : (
+              <div
+                className="saved-chat-list"
+                aria-label="Saved chats"
+              >
+                {savedChats.map((chat) => (
+                  <article
+                    key={chat.session_id}
+                    className={
+                      chat.session_id === sessionId
+                        ? "saved-chat-item active"
+                        : "saved-chat-item"
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="saved-chat-open"
+                      onClick={() =>
+                        openSavedChat(chat.session_id)
+                      }
+                    >
+                      <span className="saved-chat-title">
+                        {chat.title}
+                      </span>
+                      <span className="saved-chat-preview">
+                        {chat.last_message_preview}
+                      </span>
+                      <span className="saved-chat-meta">
+                        {chat.message_count} messages · Updated{" "}
+                        {formatSavedDate(chat.updated_at)} · Expires{" "}
+                        {formatSavedDate(chat.expires_at)}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="saved-chat-delete"
+                      onClick={() =>
+                        void deleteSavedChat(chat.session_id)
+                      }
+                      aria-label={`Delete saved chat: ${chat.title}`}
+                    >
+                      Delete
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         {isSettingsOpen && (
           <section

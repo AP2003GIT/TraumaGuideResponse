@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ChatResponse,
   SavedConversation,
+  SavedConversationList,
 } from "./types";
 
 const API_BASE_URL =
@@ -68,6 +69,16 @@ export async function getSavedConversation(
   }
 
   return (await response.json()) as SavedConversation;
+}
+
+export async function getSavedConversations(): Promise<SavedConversationList> {
+  const response = await fetch(`${API_BASE_URL}/api/conversations`);
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as SavedConversationList;
 }
 
 export async function deleteSavedConversation(

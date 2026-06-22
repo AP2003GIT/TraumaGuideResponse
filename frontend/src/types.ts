@@ -37,3 +37,20 @@ export interface SavedConversation {
   expires_at: string;
   retention_days: number;
 }
+
+export interface SavedConversationSummary {
+  session_id: string;
+  title: string;
+  last_message_preview: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  retention_days: number;
+}
+
+export interface SavedConversationList {
+  conversations: SavedConversationSummary[];
+  max_saved_chats: number;
+  retention_days: number;
+}

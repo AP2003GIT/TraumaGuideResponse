@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.schemas import (
     DeleteConversationResponse,
     SavedConversation,
+    SavedConversationList,
     SaveTurnRequest,
 )
 from app.storage import ChatStore, ConversationNotFoundError
@@ -18,8 +19,9 @@ SessionId = Annotated[str, Path(min_length=1, max_length=120)]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store = ChatStore(
-        database_path=settings.chat_storage_path,
+        database_url=settings.database_url,
         retention_days=settings.chat_retention_days,
+        max_saved_chats=settings.chat_max_saved_chats,
     )
     store.initialize()
     app.state.chat_store = store
@@ -51,7 +53,15 @@ async def root() -> dict[str, str]:
 
 
 @app.get("/health", tags=["system"])
-async def health() -> dict[str, str]:
+async def health(request: Request) -> dict[str, str]:
+    try:
+        get_store(request).health_check()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is unavailable.",
+        ) from exc
+
     return {"status": "healthy"}
 
 
@@ -66,6 +76,15 @@ async def save_turn(
     request: Request,
 ) -> SavedConversation:
     return get_store(request).save_turn(session_id, payload)
+
+
+@app.get(
+    "/internal/conversations",
+    response_model=SavedConversationList,
+    tags=["internal"],
+)
+async def list_conversations(request: Request) -> SavedConversationList:
+    return get_store(request).list_conversations()
 
 
 @app.get(

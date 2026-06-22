@@ -51,10 +51,12 @@ services:
     build:
       context: ./save-service
     environment:
-      CHAT_STORAGE_PATH: /data/chats.sqlite3
+      DATABASE_URL: postgresql://support_app:${POSTGRES_PASSWORD:-support_app_dev_password}@postgres:5432/emotional_support
       CHAT_RETENTION_DAYS: ${CHAT_RETENTION_DAYS:-10}
-    volumes:
-      - chat-data:/data
+      CHAT_MAX_SAVED_CHATS: ${CHAT_MAX_SAVED_CHATS:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8003:8003"
     healthcheck:
@@ -64,6 +66,28 @@ services:
           "python",
           "-c",
           "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-emotional_support}
+      POSTGRES_USER: ${POSTGRES_USER:-support_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support_app_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-support_app} -d ${POSTGRES_DB:-emotional_support}",
         ]
       interval: 10s
       timeout: 5s
@@ -117,4 +141,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  chat-data:
+  postgres-data:

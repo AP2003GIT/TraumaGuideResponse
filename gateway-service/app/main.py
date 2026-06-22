@@ -22,6 +22,7 @@ from app.schemas import (
     DependencyStatus,
     RiskAssessment,
     SavedConversation,
+    SavedConversationList,
     SaveTurnRequest,
 )
 
@@ -225,6 +226,38 @@ async def chat(
 
     except DownstreamServiceError as exc:
         # Safety failure is fail-closed: no normal generation is attempted.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "request_id": request_id,
+                "service": exc.service,
+                "message": str(exc),
+            },
+        ) from exc
+
+
+@app.get(
+    "/api/conversations",
+    response_model=SavedConversationList,
+    tags=["chat"],
+)
+async def list_saved_conversations(
+    request: Request,
+) -> SavedConversationList:
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        conversations = await get_model(
+            client=client,
+            service_name="save-service",
+            url=f"{settings.save_service_url}/internal/conversations",
+            response_model=SavedConversationList,
+            request_id=request_id,
+        )
+        assert isinstance(conversations, SavedConversationList)
+        return conversations
+    except DownstreamServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={

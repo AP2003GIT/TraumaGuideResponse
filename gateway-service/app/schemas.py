@@ -100,6 +100,23 @@ class SavedConversation(BaseModel):
     retention_days: int
 
 
+class SavedConversationSummary(BaseModel):
+    session_id: str
+    title: str
+    last_message_preview: str
+    message_count: int
+    created_at: str
+    updated_at: str
+    expires_at: str
+    retention_days: int
+
+
+class SavedConversationList(BaseModel):
+    conversations: list[SavedConversationSummary]
+    max_saved_chats: int
+    retention_days: int
+
+
 class DeleteConversationResponse(BaseModel):
     deleted: bool
 

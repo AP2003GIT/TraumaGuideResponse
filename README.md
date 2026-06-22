@@ -23,15 +23,17 @@ Gateway Service :8000
    |             |           |
    v             v           v
 Safety :8001   Chat :8002   Save :8003
-   |             |
-   +---- Gemini--+
+   |             |           |
+   +---- Gemini--+           v
+                         PostgreSQL :5432
 ```
 
 The browser communicates only with the gateway. The gateway always calls the
 safety service first. High or immediate-risk messages receive a controlled
 safety response, while standard and elevated-risk messages are forwarded to the
-chat service. Completed exchanges are stored by the save service for up to 10
-days.
+chat service. Completed exchanges are stored by the save service in PostgreSQL.
+The database keeps up to 10 saved chat sessions, and each session expires after
+10 days by default.
 
 ## Current Features
 
@@ -39,8 +41,11 @@ days.
 * Multi-turn conversation history
 * Structured risk classification
 * Controlled high-risk response routing
-* Saved chat sessions with a 10-day retention window
+* PostgreSQL-backed saved chat sessions
+* Maximum of 10 saved chat sessions
+* 10-day saved-chat retention window
 * Clear-chat action that also deletes the saved conversation
+* Saved chats screen for reopening previous conversations
 * Settings panel with General display mode controls
 * Light and dark display modes saved on the user's device
 * Assistant message formatting for paragraphs, numbered lists, bullets, and
@@ -57,7 +62,9 @@ days.
 The React frontend provides the chat interface, restores the saved chat session,
 and sends recent conversation history with every new message. The Settings
 panel includes a General display mode control for switching between light and
-dark mode.
+dark mode. The Saved chats screen lists the currently retained conversations,
+shows preview and expiry details, and lets the user reopen or delete saved
+chats.
 
 ### Gateway Service
 
@@ -94,8 +101,9 @@ The chat service:
 
 ### Save Service
 
-The save service stores local chat sessions in SQLite. Saved conversations
-expire after `CHAT_RETENTION_DAYS`, which defaults to 10.
+The save service stores local chat sessions in PostgreSQL. It prunes older
+sessions after `CHAT_MAX_SAVED_CHATS`, which defaults to 10, and expires saved
+conversations after `CHAT_RETENTION_DAYS`, which defaults to 10.
 
 ## Technology Stack
 
@@ -105,7 +113,7 @@ expire after `CHAT_RETENTION_DAYS`, which defaults to 10.
 * Python
 * FastAPI
 * Gemini API
-* SQLite
+* PostgreSQL
 * Docker
 * Docker Compose
 * Nginx
@@ -145,12 +153,28 @@ Open:
 * Safety Swagger: http://localhost:8001/docs
 * Chat Swagger: http://localhost:8002/docs
 * Save Swagger: http://localhost:8003/docs
+* PostgreSQL: localhost:5432
 
 Stop the application:
 
 ```bash
 docker compose down
 ```
+
+## pgAdmin4 Connection
+
+pgAdmin4 is the database admin UI. The database itself runs as the `postgres`
+service in Docker Compose.
+
+Register a new server in pgAdmin4 with:
+
+* Host: `localhost`
+* Port: `5432`
+* Maintenance database: `emotional_support`
+* Username: `support_app`
+* Password: `support_app_dev_password`
+
+The main tables are `conversations` and `messages`.
 
 ## Test Each Service Independently
 
@@ -197,8 +221,9 @@ Open http://localhost:8000/docs and test `POST /api/chat`:
 Open http://localhost:8003/docs and test
 `POST /internal/conversations/{session_id}/turns`.
 
-Saved conversations are stored in SQLite and expire after
-`CHAT_RETENTION_DAYS`, which defaults to 10.
+Saved conversations are stored in PostgreSQL. Older sessions are pruned after
+`CHAT_MAX_SAVED_CHATS`, which defaults to 10, and each saved session expires
+after `CHAT_RETENTION_DAYS`, which defaults to 10.
 
 ## Manual PyCharm Development
 
@@ -231,6 +256,12 @@ python -m uvicorn app.main:app --reload --port 8002
 ### 3. Save service
 
 Open a third terminal:
+
+First make sure PostgreSQL is running and set a database URL:
+
+```powershell
+$env:DATABASE_URL = "postgresql://support_app:support_app_dev_password@127.0.0.1:5432/emotional_support"
+```
 
 ```powershell
 cd save-service

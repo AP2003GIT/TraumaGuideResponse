@@ -154,6 +154,118 @@ h1 {
   background: var(--surface-subtle);
 }
 
+.saved-chats-panel {
+  margin: 18px 30px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-subtle);
+}
+
+.saved-chats-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.saved-chats-header h2 {
+  margin: 0 0 5px;
+  font-size: 1.12rem;
+}
+
+.saved-chats-header p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.saved-chats-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.saved-chat-list {
+  display: grid;
+  gap: 10px;
+  max-height: 310px;
+  overflow-y: auto;
+  padding-top: 14px;
+}
+
+.saved-chat-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: stretch;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.saved-chat-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.saved-chat-open {
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.saved-chat-title,
+.saved-chat-preview,
+.saved-chat-meta {
+  display: block;
+}
+
+.saved-chat-title {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-chat-preview {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.saved-chat-meta {
+  margin-top: 7px;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.saved-chat-delete {
+  align-self: center;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: 9px;
+  font-weight: 750;
+}
+
+.saved-chats-empty {
+  padding: 22px 4px 6px;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+}
+
 .settings-header,
 .setting-row {
   display: flex;
@@ -459,6 +571,27 @@ h1 {
 
   .settings-panel {
     margin: 14px 18px 0;
+  }
+
+  .saved-chats-panel {
+    margin: 14px 18px 0;
+  }
+
+  .saved-chats-header,
+  .saved-chat-item {
+    grid-template-columns: 1fr;
+  }
+
+  .saved-chats-header {
+    flex-direction: column;
+  }
+
+  .saved-chats-actions {
+    justify-content: flex-start;
+  }
+
+  .saved-chat-delete {
+    justify-self: flex-start;
   }
 
   .settings-header,
