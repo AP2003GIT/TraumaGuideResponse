@@ -59,6 +59,18 @@ export async function loginAccount(
   });
 }
 
+export async function continueAsDeveloper(): Promise<AuthResponse> {
+  const displayName = "Developer";
+  const email = "developer@local.dev";
+  const password = "developer-password";
+
+  try {
+    return await loginAccount(email, password);
+  } catch {
+    return registerAccount(displayName, email, password);
+  }
+}
+
 async function authRequest(
   path: string,
   body: Record<string, string>,

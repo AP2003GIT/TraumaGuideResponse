@@ -40,6 +40,8 @@ by default.
 
 * AI-powered emotional-support chat
 * Sign up, login, and logout
+* Remember me checkbox for persistent local autologin
+* Optional local developer login shortcut
 * User-scoped saved chat history
 * Multi-turn conversation history
 * Structured risk classification
@@ -48,11 +50,12 @@ by default.
 * Maximum of 10 saved chat sessions per user
 * 10-day saved-chat retention window
 * Clear-chat action that also deletes the saved conversation
-* Saved chats screen for reopening previous conversations
+* Saved chats sidebar with search and active chat highlighting
+* Message timestamps, copy, retry, and regenerate controls
 * Account export and account-data deletion controls
-* Settings panel with General display mode controls
+* Tabbed Settings panel with General, Account, Privacy, and Safety sections
 * Light and dark display modes saved on the user's device
-* Crisis-resource banner for high and immediate risk responses
+* Crisis-resource panel with 988 call, text, and chat actions
 * Assistant message formatting for paragraphs, numbered lists, bullets, and
   bold text
 * Separate gateway, safety, chat, and save services
@@ -67,9 +70,10 @@ by default.
 The React frontend provides sign up and login, the chat interface, saved-chat
 restoration, and recent conversation history with every new message. The
 Settings panel includes General display mode controls, account logout, saved
-chat export, and account-data deletion. The Saved chats screen lists the
-currently retained conversations for the signed-in user, shows preview and
-expiry details, and lets the user reopen or delete saved chats.
+chat export, account-data deletion, and safety resources. The saved-chat
+sidebar lists the currently retained conversations for the signed-in user,
+supports search, shows preview and expiry details, and lets the user reopen or
+delete saved chats.
 
 ### Gateway Service
 
@@ -154,6 +158,13 @@ For local development, you can also set a gateway token secret:
 
 ```env
 AUTH_TOKEN_SECRET=replace-this-with-a-long-random-development-secret
+```
+
+Docker Compose enables the frontend developer login shortcut by default. To
+hide it, set:
+
+```env
+VITE_ENABLE_DEV_LOGIN=false
 ```
 
 Start the complete application:

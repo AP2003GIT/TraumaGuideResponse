@@ -14,6 +14,7 @@ import {
   exportAccountData,
   getSavedConversation,
   getSavedConversations,
+  continueAsDeveloper,
   loginAccount,
   registerAccount,
   sendChatMessage,
@@ -30,10 +31,13 @@ import type {
 interface DisplayMessage extends ChatMessage {
   id: string;
   riskLevel?: RiskLevel;
+  createdAt: string;
+  status?: "failed";
 }
 
 type DisplayMode = "light" | "dark";
 type AuthMode = "login" | "register";
+type SettingsTab = "general" | "account" | "privacy" | "safety";
 
 const starterPrompts = [
   "I feel overwhelmed and need a grounding exercise.",
@@ -45,6 +49,10 @@ const SAVED_SESSION_KEY = "emotional-support-session-id";
 const DISPLAY_MODE_KEY = "emotional-support-display-mode";
 const AUTH_TOKEN_KEY = "emotional-support-auth-token";
 const AUTH_USER_KEY = "emotional-support-auth-user";
+const IS_DEV_LOGIN_ENABLED =
+  import.meta.env.VITE_ENABLE_DEV_LOGIN === "true" ||
+  (import.meta.env.DEV &&
+    import.meta.env.VITE_ENABLE_DEV_LOGIN !== "false");
 
 function createId(): string {
   return crypto.randomUUID();
@@ -90,9 +98,21 @@ function getSavedAuth(): {
   token: string | null;
   user: AuthenticatedUser | null;
 } {
+  const rememberedAuth = readStoredAuth(localStorage);
+  if (rememberedAuth.token && rememberedAuth.user) {
+    return rememberedAuth;
+  }
+
+  return readStoredAuth(sessionStorage);
+}
+
+function readStoredAuth(storage: Storage): {
+  token: string | null;
+  user: AuthenticatedUser | null;
+} {
   try {
-    const token = localStorage.getItem(AUTH_TOKEN_KEY);
-    const rawUser = localStorage.getItem(AUTH_USER_KEY);
+    const token = storage.getItem(AUTH_TOKEN_KEY);
+    const rawUser = storage.getItem(AUTH_USER_KEY);
     if (!token || !rawUser) {
       return { token: null, user: null };
     }
@@ -106,10 +126,18 @@ function getSavedAuth(): {
   }
 }
 
-function saveAuth(token: string, user: AuthenticatedUser) {
+function saveAuth(
+  token: string,
+  user: AuthenticatedUser,
+  rememberMe: boolean,
+) {
+  clearAuth();
+
+  const storage = rememberMe ? localStorage : sessionStorage;
+
   try {
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+    storage.setItem(AUTH_TOKEN_KEY, token);
+    storage.setItem(AUTH_USER_KEY, JSON.stringify(user));
   } catch {
     // Auth remains available until the page reloads.
   }
@@ -119,6 +147,8 @@ function clearAuth() {
   try {
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(AUTH_USER_KEY);
+    sessionStorage.removeItem(AUTH_TOKEN_KEY);
+    sessionStorage.removeItem(AUTH_USER_KEY);
   } catch {
     // Local storage is best effort.
   }
@@ -130,6 +160,7 @@ function toDisplayMessage(message: SavedChatMessage): DisplayMessage {
     role: message.role,
     content: message.content,
     riskLevel: message.risk_level ?? undefined,
+    createdAt: message.created_at,
   };
 }
 
@@ -137,6 +168,13 @@ function formatSavedDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatMessageTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
@@ -309,6 +347,7 @@ function AuthPanel({
   mode,
   onModeChange,
   onSubmit,
+  onDevLogin,
   isSubmitting,
   error,
 }: {
@@ -319,17 +358,21 @@ function AuthPanel({
     displayName: string,
     email: string,
     password: string,
+    rememberMe: boolean,
   ) => Promise<void>;
+  onDevLogin: (rememberMe: boolean) => Promise<void>;
   isSubmitting: boolean;
   error: string | null;
 }) {
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void onSubmit(mode, displayName, email, password);
+    void onSubmit(mode, displayName, email, password, rememberMe);
   }
 
   return (
@@ -386,13 +429,36 @@ function AuthPanel({
 
           <label>
             Password
+            <span className="password-field">
+              <input
+                type={isPasswordVisible ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={8}
+                required
+              />
+              <button
+                className="password-toggle"
+                type="button"
+                onClick={() =>
+                  setIsPasswordVisible((current) => !current)
+                }
+              >
+                {isPasswordVisible ? "Hide" : "Show"}
+              </button>
+            </span>
+            <span className="auth-hint">
+              Use at least 8 characters for local testing.
+            </span>
+          </label>
+
+          <label className="remember-me-control">
             <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              minLength={8}
-              required
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(event) => setRememberMe(event.target.checked)}
             />
+            <span>Remember me on this device</span>
           </label>
 
           {error && (
@@ -413,6 +479,20 @@ function AuthPanel({
                 : "Log in"}
           </button>
         </form>
+
+        {IS_DEV_LOGIN_ENABLED && (
+          <div className="dev-login-panel">
+            <p>Development only</p>
+            <button
+              className="secondary-button dev-login-button"
+              type="button"
+              onClick={() => void onDevLogin(rememberMe)}
+              disabled={isSubmitting}
+            >
+              Continue as developer
+            </button>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -433,6 +513,8 @@ export default function App() {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavedChatsOpen, setIsSavedChatsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const [savedChatSearch, setSavedChatSearch] = useState("");
   const [savedChats, setSavedChats] = useState<
     SavedConversationSummary[]
   >([]);
@@ -461,6 +543,22 @@ export default function App() {
         message.riskLevel === "immediate"),
   );
 
+  const filteredSavedChats = useMemo(
+    () =>
+      savedChats.filter((chat) => {
+        const query = savedChatSearch.trim().toLowerCase();
+        if (!query) {
+          return true;
+        }
+
+        return (
+          chat.title.toLowerCase().includes(query) ||
+          chat.last_message_preview.toLowerCase().includes(query)
+        );
+      }),
+    [savedChatSearch, savedChats],
+  );
+
   useEffect(() => {
     document.documentElement.dataset.theme = displayMode;
     document.documentElement.style.colorScheme = displayMode;
@@ -477,6 +575,12 @@ export default function App() {
       void refreshSavedChats();
     }
   }, [isSavedChatsOpen, authToken]);
+
+  useEffect(() => {
+    if (authToken) {
+      void refreshSavedChats(false);
+    }
+  }, [authToken]);
 
   useEffect(() => {
     if (!authToken) {
@@ -519,6 +623,7 @@ export default function App() {
     displayName: string,
     email: string,
     password: string,
+    rememberMe: boolean,
   ) {
     setIsAuthenticating(true);
     setAuthError(null);
@@ -529,7 +634,7 @@ export default function App() {
           ? await registerAccount(displayName, email, password)
           : await loginAccount(email, password);
 
-      saveAuth(response.access_token, response.user);
+      saveAuth(response.access_token, response.user, rememberMe);
       setAuthToken(response.access_token);
       setCurrentUser(response.user);
       setMessages([]);
@@ -539,6 +644,29 @@ export default function App() {
         caughtError instanceof Error
           ? caughtError.message
           : "Authentication failed.",
+      );
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }
+
+  async function handleDevLogin(rememberMe: boolean) {
+    setIsAuthenticating(true);
+    setAuthError(null);
+
+    try {
+      const response = await continueAsDeveloper();
+
+      saveAuth(response.access_token, response.user, rememberMe);
+      setAuthToken(response.access_token);
+      setCurrentUser(response.user);
+      setMessages([]);
+      setError(null);
+    } catch (caughtError) {
+      setAuthError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Developer login failed.",
       );
     } finally {
       setIsAuthenticating(false);
@@ -605,7 +733,13 @@ export default function App() {
     }
   }
 
-  async function submitMessage(rawMessage: string) {
+  async function submitMessage(
+    rawMessage: string,
+    options: {
+      appendUser?: boolean;
+      historyOverride?: ChatMessage[];
+    } = {},
+  ) {
     if (!authToken) {
       setError("Sign in to send and save chats.");
       return;
@@ -617,16 +751,21 @@ export default function App() {
       return;
     }
 
-    const previousHistory = history;
+    const shouldAppendUser = options.appendUser !== false;
+    const previousHistory = options.historyOverride ?? history;
+    const userMessageId = createId();
 
-    setMessages((current) => [
-      ...current,
-      {
-        id: createId(),
-        role: "user",
-        content: message,
-      },
-    ]);
+    if (shouldAppendUser) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: userMessageId,
+          role: "user",
+          content: message,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    }
     setDraft("");
     setError(null);
     setIsSending(true);
@@ -646,6 +785,7 @@ export default function App() {
           role: "assistant",
           content: response.reply,
           riskLevel: response.risk_level,
+          createdAt: new Date().toISOString(),
         },
       ]);
 
@@ -663,9 +803,59 @@ export default function App() {
           : "An unexpected error occurred.";
 
       setError(messageText);
+      if (shouldAppendUser) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === userMessageId
+              ? { ...message, status: "failed" }
+              : message,
+          ),
+        );
+      }
     } finally {
       setIsSending(false);
       inputRef.current?.focus();
+    }
+  }
+
+  async function retryMessage(message: DisplayMessage) {
+    setMessages((current) =>
+      current.filter((currentMessage) => currentMessage.id !== message.id),
+    );
+    await submitMessage(message.content);
+  }
+
+  async function regenerateLastReply() {
+    if (isSending) {
+      return;
+    }
+
+    const lastUserIndex = [...messages]
+      .map((message, index) => ({ message, index }))
+      .reverse()
+      .find(({ message }) => message.role === "user")?.index;
+
+    if (lastUserIndex === undefined) {
+      return;
+    }
+
+    const lastUserMessage = messages[lastUserIndex];
+    const historyBeforeUser = messages
+      .slice(0, lastUserIndex)
+      .map(({ role, content }) => ({ role, content }));
+
+    setMessages(messages.slice(0, lastUserIndex + 1));
+    await submitMessage(lastUserMessage.content, {
+      appendUser: false,
+      historyOverride: historyBeforeUser,
+    });
+  }
+
+  async function copyMessage(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      setError("Message could not be copied.");
     }
   }
 
@@ -768,6 +958,7 @@ export default function App() {
         mode={authMode}
         onModeChange={setAuthMode}
         onSubmit={handleAuthSubmit}
+        onDevLogin={handleDevLogin}
         isSubmitting={isAuthenticating}
         error={authError}
       />
@@ -776,7 +967,84 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="chat-card">
+      <div className="chat-layout">
+        <aside className="saved-sidebar" aria-labelledby="sidebar-heading">
+          <div className="saved-sidebar-header">
+            <div>
+              <h2 id="sidebar-heading">Saved chats</h2>
+              <p>
+                {savedChats.length}/{savedChatsLimit} saved
+              </p>
+            </div>
+
+            <button
+              className="primary-button compact-button"
+              type="button"
+              onClick={startNewChat}
+              disabled={isSending}
+            >
+              New
+            </button>
+          </div>
+
+          <label className="sidebar-search">
+            Search chats
+            <input
+              value={savedChatSearch}
+              onChange={(event) => setSavedChatSearch(event.target.value)}
+              placeholder="Search saved chats"
+            />
+          </label>
+
+          <div className="sidebar-list" aria-label="Saved chats">
+            {isLoadingSavedChats ? (
+              <div className="saved-chats-empty">Loading saved chats...</div>
+            ) : filteredSavedChats.length === 0 ? (
+              <div className="saved-chats-empty">
+                {savedChatSearch
+                  ? "No saved chats match your search."
+                  : "Saved chats will appear here after a reply is stored."}
+              </div>
+            ) : (
+              filteredSavedChats.map((chat) => (
+                <article
+                  key={chat.session_id}
+                  className={
+                    chat.session_id === sessionId
+                      ? "sidebar-chat active"
+                      : "sidebar-chat"
+                  }
+                >
+                  <button
+                    type="button"
+                    className="sidebar-chat-open"
+                    onClick={() => openSavedChat(chat.session_id)}
+                  >
+                    <span className="saved-chat-title">{chat.title}</span>
+                    <span className="saved-chat-preview">
+                      {chat.last_message_preview}
+                    </span>
+                    <span className="saved-chat-meta">
+                      {chat.message_count} messages ·{" "}
+                      {formatSavedDate(chat.updated_at)}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="saved-chat-delete icon-delete"
+                    onClick={() => void deleteSavedChat(chat.session_id)}
+                    aria-label={`Delete saved chat: ${chat.title}`}
+                  >
+                    Delete
+                  </button>
+                </article>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <section className="chat-card">
         <header className="app-header">
           <div>
             <p className="eyebrow">Safety-aware AI demo</p>
@@ -788,7 +1056,7 @@ export default function App() {
 
           <div className="header-actions">
             <button
-              className="secondary-button"
+              className="secondary-button mobile-saved-toggle"
               type="button"
               onClick={() =>
                 setIsSavedChatsOpen((current) => !current)
@@ -865,20 +1133,33 @@ export default function App() {
               </div>
             </div>
 
+            <label className="sidebar-search panel-search">
+              Search chats
+              <input
+                value={savedChatSearch}
+                onChange={(event) =>
+                  setSavedChatSearch(event.target.value)
+                }
+                placeholder="Search saved chats"
+              />
+            </label>
+
             {isLoadingSavedChats ? (
               <div className="saved-chats-empty">
                 Loading saved chats...
               </div>
-            ) : savedChats.length === 0 ? (
+            ) : filteredSavedChats.length === 0 ? (
               <div className="saved-chats-empty">
-                Saved chats will appear here after a reply is stored.
+                {savedChatSearch
+                  ? "No saved chats match your search."
+                  : "Saved chats will appear here after a reply is stored."}
               </div>
             ) : (
               <div
                 className="saved-chat-list"
                 aria-label="Saved chats"
               >
-                {savedChats.map((chat) => (
+                {filteredSavedChats.map((chat) => (
                   <article
                     key={chat.session_id}
                     className={
@@ -933,7 +1214,7 @@ export default function App() {
             <div className="settings-header">
               <div>
                 <h2 id="settings-heading">Settings</h2>
-                <p>General</p>
+                <p>{settingsTab[0].toUpperCase() + settingsTab.slice(1)}</p>
               </div>
 
               <button
@@ -945,91 +1226,162 @@ export default function App() {
               </button>
             </div>
 
-            <div className="setting-row">
-              <div>
-                <h3>Display mode</h3>
-                <p>Choose how the app appears on this device.</p>
-              </div>
-
-              <div
-                className="segmented-control"
-                role="group"
-                aria-label="Display mode"
-              >
-                <button
-                  type="button"
-                  className={
-                    displayMode === "light" ? "active" : undefined
-                  }
-                  aria-pressed={displayMode === "light"}
-                  onClick={() => setDisplayMode("light")}
-                >
-                  Light
-                </button>
-
-                <button
-                  type="button"
-                  className={
-                    displayMode === "dark" ? "active" : undefined
-                  }
-                  aria-pressed={displayMode === "dark"}
-                  onClick={() => setDisplayMode("dark")}
-                >
-                  Dark
-                </button>
-              </div>
+            <div className="settings-tabs" role="tablist">
+              {(["general", "account", "privacy", "safety"] as SettingsTab[]).map(
+                (tabName) => (
+                  <button
+                    key={tabName}
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsTab === tabName}
+                    className={settingsTab === tabName ? "active" : undefined}
+                    onClick={() => setSettingsTab(tabName)}
+                  >
+                    {tabName[0].toUpperCase() + tabName.slice(1)}
+                  </button>
+                ),
+              )}
             </div>
 
-            <div className="setting-row">
-              <div>
-                <h3>Account</h3>
-                <p>{currentUser.email}</p>
+            {settingsTab === "general" && (
+              <div className="setting-row">
+                <div>
+                  <h3>Display mode</h3>
+                  <p>Choose how the app appears on this device.</p>
+                </div>
+
+                <div
+                  className="segmented-control"
+                  role="group"
+                  aria-label="Display mode"
+                >
+                  <button
+                    type="button"
+                    className={
+                      displayMode === "light" ? "active" : undefined
+                    }
+                    aria-pressed={displayMode === "light"}
+                    onClick={() => setDisplayMode("light")}
+                  >
+                    Light
+                  </button>
+
+                  <button
+                    type="button"
+                    className={
+                      displayMode === "dark" ? "active" : undefined
+                    }
+                    aria-pressed={displayMode === "dark"}
+                    onClick={() => setDisplayMode("dark")}
+                  >
+                    Dark
+                  </button>
+                </div>
               </div>
+            )}
 
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={signOut}
-              >
-                Log out
-              </button>
-            </div>
+            {settingsTab === "account" && (
+              <div className="setting-row">
+                <div>
+                  <h3>Account</h3>
+                  <p>{currentUser.email}</p>
+                </div>
 
-            <div className="setting-row">
-              <div>
-                <h3>Privacy</h3>
-                <p>Export saved chats or delete your account data.</p>
-              </div>
-
-              <div className="privacy-actions">
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={() => void exportSavedChats()}
+                  onClick={signOut}
                 >
-                  Export chats
-                </button>
-
-                <button
-                  className="danger-button"
-                  type="button"
-                  onClick={() => void deleteAccount()}
-                >
-                  Delete account
+                  Log out
                 </button>
               </div>
-            </div>
+            )}
+
+            {settingsTab === "privacy" && (
+              <div className="setting-row">
+                <div>
+                  <h3>Privacy</h3>
+                  <p>Export saved chats or delete your account data.</p>
+                </div>
+
+                <div className="privacy-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void exportSavedChats()}
+                  >
+                    Export chats
+                  </button>
+
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={() => void deleteAccount()}
+                  >
+                    Delete account
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "safety" && (
+              <div className="setting-row safety-setting">
+                <div>
+                  <h3>Safety resources</h3>
+                  <p>
+                    If there is immediate danger, contact emergency services.
+                    In the U.S., 988 offers free crisis support.
+                  </p>
+                </div>
+
+                <div className="crisis-actions">
+                  <a className="crisis-action" href="tel:988">
+                    Call 988
+                  </a>
+                  <a className="crisis-action" href="sms:988">
+                    Text 988
+                  </a>
+                  <a
+                    className="crisis-action"
+                    href="https://chat.988lifeline.org/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open 988 chat
+                  </a>
+                </div>
+              </div>
+            )}
           </section>
         )}
 
         {hasCrisisRisk && (
           <section className="crisis-panel" role="alert">
-            <strong>Immediate support is available.</strong>
-            <p>
-              If you might hurt yourself or someone else, call emergency
-              services now. In the U.S., call or text 988, or use the
-              988 Lifeline chat for 24/7 crisis support.
-            </p>
+            <div>
+              <strong>Immediate support is available.</strong>
+              <p>
+                If you might hurt yourself or someone else, call emergency
+                services now. In the U.S., the 988 Lifeline can be reached
+                by call, text, or chat.
+              </p>
+            </div>
+
+            <div className="crisis-actions">
+              <a className="crisis-action" href="tel:988">
+                Call 988
+              </a>
+              <a className="crisis-action" href="sms:988">
+                Text 988
+              </a>
+              <a
+                className="crisis-action"
+                href="https://chat.988lifeline.org/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open 988 chat
+              </a>
+            </div>
           </section>
         )}
 
@@ -1067,33 +1419,76 @@ export default function App() {
               </div>
             </div>
           ) : (
-            messages.map((message) => (
-              <article
-                key={message.id}
-                className={`message ${message.role}`}
-              >
-                <div className="message-heading">
-                  <strong>
-                    {message.role === "user" ? "You" : "Guide"}
-                  </strong>
+            messages.map((message, index) => {
+              const isLastAssistant =
+                message.role === "assistant" &&
+                index === messages.length - 1;
 
-                  {message.role === "assistant" &&
-                    message.riskLevel &&
-                    message.riskLevel !== "standard" && (
-                      <span
-                        className={`risk-badge ${message.riskLevel}`}
+              return (
+                <article
+                  key={message.id}
+                  className={`message ${message.role} ${
+                    message.status === "failed" ? "failed" : ""
+                  }`}
+                >
+                  <div className="message-heading">
+                    <div className="message-heading-main">
+                      <strong>
+                        {message.role === "user" ? "You" : "Guide"}
+                      </strong>
+                      <span>{formatMessageTime(message.createdAt)}</span>
+
+                      {message.role === "assistant" &&
+                        message.riskLevel &&
+                        message.riskLevel !== "standard" && (
+                          <span
+                            className={`risk-badge ${message.riskLevel}`}
+                          >
+                            {message.riskLevel}
+                          </span>
+                        )}
+                    </div>
+
+                    <div className="message-actions">
+                      <button
+                        type="button"
+                        onClick={() => void copyMessage(message.content)}
                       >
-                        {message.riskLevel}
-                      </span>
-                    )}
-                </div>
+                        Copy
+                      </button>
+                      {message.status === "failed" && (
+                        <button
+                          type="button"
+                          onClick={() => void retryMessage(message)}
+                        >
+                          Retry
+                        </button>
+                      )}
+                      {isLastAssistant && (
+                        <button
+                          type="button"
+                          onClick={() => void regenerateLastReply()}
+                          disabled={isSending}
+                        >
+                          Regenerate
+                        </button>
+                      )}
+                    </div>
+                  </div>
 
-                <MessageContent
-                  content={message.content}
-                  role={message.role}
-                />
-              </article>
-            ))
+                  <MessageContent
+                    content={message.content}
+                    role={message.role}
+                  />
+
+                  {message.status === "failed" && (
+                    <p className="message-status">
+                      This message did not send.
+                    </p>
+                  )}
+                </article>
+              );
+            })
           )}
 
           {isSending && (
@@ -1136,7 +1531,8 @@ export default function App() {
             </button>
           </div>
         </form>
-      </section>
+        </section>
+      </div>
     </main>
   );
 }
