@@ -5,7 +5,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import create_access_token, get_current_user
+from app.auth import create_access_token, get_current_user, require_admin_user
 from app.clients import (
     DownstreamServiceError,
     delete_model,
@@ -14,6 +14,7 @@ from app.clients import (
     post_model,
 )
 from app.config import get_settings
+from app.rate_limit import check_rate_limit
 from app.schemas import (
     AccountExport,
     AdminDashboard,
@@ -136,6 +137,12 @@ async def register(
     payload: RegisterRequest,
     request: Request,
 ) -> AuthResponse:
+    check_rate_limit(
+        request,
+        bucket="auth",
+        max_requests=settings.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -172,6 +179,12 @@ async def login(
     payload: AuthRequest,
     request: Request,
 ) -> AuthResponse:
+    check_rate_limit(
+        request,
+        bucket="auth",
+        max_requests=settings.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -208,6 +221,12 @@ async def request_password_reset(
     payload: PasswordResetRequest,
     request: Request,
 ) -> PasswordResetRequestResponse:
+    check_rate_limit(
+        request,
+        bucket="auth",
+        max_requests=settings.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -238,6 +257,12 @@ async def confirm_password_reset(
     payload: PasswordResetConfirmRequest,
     request: Request,
 ) -> AuthResponse:
+    check_rate_limit(
+        request,
+        bucket="auth",
+        max_requests=settings.auth_rate_limit_per_minute,
+        window_seconds=60,
+    )
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -360,8 +385,14 @@ async def export_account_data(
 )
 async def admin_dashboard(
     request: Request,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(require_admin_user),
 ) -> AdminDashboard:
+    check_rate_limit(
+        request,
+        bucket="admin",
+        max_requests=settings.admin_rate_limit_per_minute,
+        window_seconds=60,
+    )
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -460,6 +491,12 @@ async def chat(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ChatResponse:
+    check_rate_limit(
+        request,
+        bucket="chat",
+        max_requests=settings.chat_rate_limit_per_minute,
+        window_seconds=60,
+    )
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 

@@ -1,4 +1,5 @@
 export type Role = "user" | "assistant";
+export type UserRole = "user" | "admin";
 
 export type RiskLevel =
   | "standard"
@@ -25,6 +26,7 @@ export interface AuthenticatedUser {
   user_id: string;
   email: string;
   display_name: string;
+  role: UserRole;
 }
 
 export interface AuthResponse {

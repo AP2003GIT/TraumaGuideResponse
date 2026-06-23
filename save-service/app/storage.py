@@ -25,6 +25,7 @@ from app.schemas import (
     SavedConversationSummary,
     SavedMessage,
 )
+from app.migrations import run_migrations
 
 
 class AccountAlreadyExistsError(ValueError):
@@ -53,108 +54,20 @@ class ChatStore:
         database_url: str,
         retention_days: int,
         max_saved_chats: int,
+        admin_emails: list[str] | None = None,
     ) -> None:
         self.database_url = database_url
         self.retention_days = retention_days
         self.max_saved_chats = max_saved_chats
+        self.admin_emails = {
+            email.strip().lower()
+            for email in (admin_emails or [])
+            if email.strip()
+        }
 
     def initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE,
-                    display_name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversations (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL,
-                    expires_at TIMESTAMPTZ NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id TEXT"
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL
-                        REFERENCES conversations(session_id)
-                        ON DELETE CASCADE,
-                    role TEXT NOT NULL CHECK (
-                        role IN ('user', 'assistant')
-                    ),
-                    content TEXT NOT NULL,
-                    risk_level TEXT CHECK (
-                        risk_level IN (
-                            'standard',
-                            'elevated',
-                            'high',
-                            'immediate'
-                        )
-                    ),
-                    model TEXT,
-                    request_id TEXT NOT NULL,
-                    turn_position SMALLINT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    UNIQUE(session_id, request_id, role)
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                    token_hash TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL
-                        REFERENCES users(user_id)
-                        ON DELETE CASCADE,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    used_at TIMESTAMPTZ
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_users_email
-                    ON users(email)
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_conversations_expires_at
-                    ON conversations(expires_at)
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
-                    ON conversations(user_id, updated_at DESC)
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_messages_session_created
-                    ON messages(session_id, created_at, turn_position)
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
-                    ON password_reset_tokens(user_id, expires_at)
-                """
-            )
+            run_migrations(connection)
             self._cleanup_expired(connection, self._now())
             self._cleanup_reset_tokens(connection, self._now())
 
@@ -162,12 +75,31 @@ class ChatStore:
         with self._connect() as connection:
             connection.execute("SELECT 1")
 
+    def _role_for_email(self, email: str, stored_role: str = "user") -> str:
+        if email.strip().lower() in self.admin_emails:
+            return "admin"
+        if stored_role == "admin":
+            return "admin"
+        return "user"
+
+    def _user_from_row(self, row) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            user_id=row["user_id"],
+            email=row["email"],
+            display_name=row["display_name"],
+            role=self._role_for_email(
+                row["email"],
+                row["role"] if "role" in row else "user",
+            ),
+        )
+
     def create_user(self, payload: RegisterRequest) -> AuthenticatedUser:
         now = self._now()
         user = AuthenticatedUser(
             user_id=str(uuid4()),
             email=payload.email,
             display_name=payload.display_name,
+            role=self._role_for_email(payload.email),
         )
 
         try:
@@ -179,15 +111,17 @@ class ChatStore:
                         email,
                         display_name,
                         password_hash,
+                        role,
                         created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user.user_id,
                         user.email,
                         user.display_name,
                         self._hash_password(payload.password),
+                        user.role,
                         now,
                     ),
                 )
@@ -200,7 +134,7 @@ class ChatStore:
         with self._connect() as connection:
             user = connection.execute(
                 """
-                SELECT user_id, email, display_name, password_hash
+                SELECT user_id, email, display_name, password_hash, role
                 FROM users
                 WHERE email = %s
                 """,
@@ -213,17 +147,13 @@ class ChatStore:
         ):
             raise InvalidCredentialsError("Invalid email or password.")
 
-        return AuthenticatedUser(
-            user_id=user["user_id"],
-            email=user["email"],
-            display_name=user["display_name"],
-        )
+        return self._user_from_row(user)
 
     def get_user(self, user_id: str) -> AuthenticatedUser:
         with self._connect() as connection:
             user = connection.execute(
                 """
-                SELECT user_id, email, display_name
+                SELECT user_id, email, display_name, role
                 FROM users
                 WHERE user_id = %s
                 """,
@@ -233,11 +163,7 @@ class ChatStore:
         if user is None:
             raise UserNotFoundError(user_id)
 
-        return AuthenticatedUser(
-            user_id=user["user_id"],
-            email=user["email"],
-            display_name=user["display_name"],
-        )
+        return self._user_from_row(user)
 
     def update_user_profile(
         self,
@@ -274,13 +200,15 @@ class ChatStore:
                     SET
                         display_name = %s,
                         email = %s,
+                        role = %s,
                         password_hash = %s
                     WHERE user_id = %s
-                    RETURNING user_id, email, display_name
+                    RETURNING user_id, email, display_name, role
                     """,
                     (
                         payload.display_name,
                         payload.email,
+                        self._role_for_email(payload.email),
                         password_hash,
                         user_id,
                     ),
@@ -291,11 +219,7 @@ class ChatStore:
         if updated is None:
             raise UserNotFoundError(user_id)
 
-        return AuthenticatedUser(
-            user_id=updated["user_id"],
-            email=updated["email"],
-            display_name=updated["display_name"],
-        )
+        return self._user_from_row(updated)
 
     def request_password_reset(
         self,
@@ -373,7 +297,7 @@ class ChatStore:
                 UPDATE users
                 SET password_hash = %s
                 WHERE user_id = %s
-                RETURNING user_id, email, display_name
+                RETURNING user_id, email, display_name, role
                 """,
                 (
                     self._hash_password(payload.new_password),
@@ -392,11 +316,7 @@ class ChatStore:
         if updated is None:
             raise InvalidResetTokenError("Invalid reset token.")
 
-        return AuthenticatedUser(
-            user_id=updated["user_id"],
-            email=updated["email"],
-            display_name=updated["display_name"],
-        )
+        return self._user_from_row(updated)
 
     def save_turn(
         self,

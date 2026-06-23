@@ -58,8 +58,10 @@ by default.
 * Account-data deletion controls
 * Tabbed Settings panel with General, Account, Privacy, Safety, and Admin
   sections
-* Internal admin dashboard for service health and storage metrics
+* Role-protected admin dashboard for service health and storage metrics
+* Gateway rate limits for auth, chat, and admin requests
 * Light and dark display modes saved on the user's device
+* Copy confirmation feedback for message actions
 * Crisis-resource panel with 988 call, text, and chat actions
 * Assistant message formatting for paragraphs, numbered lists, bullets, and
   bold text
@@ -88,7 +90,10 @@ The gateway is the public backend entry point. It:
 * receives requests from the frontend;
 * issues signed bearer tokens after account registration or login;
 * supports local password reset and profile updates;
+* includes the user's role in issued bearer tokens;
+* rate-limits auth, chat, and admin request bursts;
 * protects chat and saved-chat endpoints;
+* restricts the admin dashboard to users with the `admin` role;
 * sends every message to the safety service;
 * forwards standard and elevated-risk messages to the chat service;
 * saves completed exchanges through the save service under the authenticated
@@ -121,10 +126,12 @@ The chat service:
 ### Save Service
 
 The save service stores accounts and local chat sessions in PostgreSQL.
-Passwords are stored as salted PBKDF2 hashes. Password reset codes are stored
-as hashes and expire after 30 minutes. Saved chats are scoped to a user, older
-sessions are pruned after `CHAT_MAX_SAVED_CHATS`, which defaults to 10, and
-saved conversations expire after `CHAT_RETENTION_DAYS`, which defaults to 10.
+It runs SQL migrations at startup and records applied versions in
+`schema_migrations`. Passwords are stored as salted PBKDF2 hashes. Password
+reset codes are stored as hashes and expire after 30 minutes. Saved chats are
+scoped to a user, older sessions are pruned after `CHAT_MAX_SAVED_CHATS`,
+which defaults to 10, and saved conversations expire after
+`CHAT_RETENTION_DAYS`, which defaults to 10.
 
 ## Technology Stack
 
@@ -174,6 +181,21 @@ hide it, set:
 VITE_ENABLE_DEV_LOGIN=false
 ```
 
+The local developer account is treated as an admin by default. Override admin
+users with:
+
+```env
+ADMIN_EMAILS=["you@example.com"]
+```
+
+Gateway limits can be tuned with:
+
+```env
+AUTH_RATE_LIMIT_PER_MINUTE=12
+CHAT_RATE_LIMIT_PER_MINUTE=20
+ADMIN_RATE_LIMIT_PER_MINUTE=30
+```
+
 Start the complete application:
 
 ```bash
@@ -208,8 +230,8 @@ Register a new server in pgAdmin4 with:
 * Username: `support_app`
 * Password: `support_app_dev_password`
 
-The main tables are `users`, `password_reset_tokens`, `conversations`, and
-`messages`.
+The main tables are `users`, `password_reset_tokens`, `conversations`,
+`messages`, and `schema_migrations`.
 
 ## Test Each Service Independently
 
@@ -362,7 +384,6 @@ Before real-world deployment, add:
 * clinician-reviewed crisis copy and escalation rules;
 * verified country-specific emergency resources;
 * comprehensive multilingual safety evaluation;
-* rate limiting;
 * secrets management;
 * encrypted storage and explicit retention controls;
 * observability without logging sensitive message bodies;

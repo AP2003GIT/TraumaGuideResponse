@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     )
     chat_retention_days: int = Field(default=10, ge=1, le=365)
     chat_max_saved_chats: int = Field(default=10, ge=1, le=1000)
+    admin_emails: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(
         env_file=".env",

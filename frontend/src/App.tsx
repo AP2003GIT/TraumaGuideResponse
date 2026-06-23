@@ -1,7 +1,6 @@
 import {
   FormEvent,
   KeyboardEvent,
-  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -14,6 +13,7 @@ import {
   deleteSavedConversation,
   exportAccountData,
   getAdminDashboard,
+  getCurrentUser,
   getSavedConversation,
   getSavedConversations,
   continueAsDeveloper,
@@ -27,21 +27,29 @@ import type {
   AdminDashboard,
   AuthenticatedUser,
   ChatMessage,
-  Role,
-  RiskLevel,
-  SavedChatMessage,
   SavedConversationSummary,
 } from "./types";
+import {
+  clearAuth,
+  getSavedAuth,
+  getSavedDisplayMode,
+  isAuthRemembered,
+  saveAuth,
+  saveDisplayMode,
+  type DisplayMode,
+} from "./authStorage";
+import {
+  createId,
+  formatMessageTime,
+  formatSavedDate,
+  getSavedSessionId,
+  saveSessionId,
+  toDisplayMessage,
+  type DisplayMessage,
+} from "./chatHelpers";
+import { AuthPanel, type AuthMode } from "./components/AuthPanel";
+import { MessageContent } from "./components/MessageContent";
 
-interface DisplayMessage extends ChatMessage {
-  id: string;
-  riskLevel?: RiskLevel;
-  createdAt: string;
-  status?: "failed";
-}
-
-type DisplayMode = "light" | "dark";
-type AuthMode = "login" | "register";
 type SettingsTab = "general" | "account" | "privacy" | "safety" | "admin";
 type ExportScope = "all" | "current";
 
@@ -50,573 +58,6 @@ const starterPrompts = [
   "Help me understand why stress affects my sleep.",
   "How can I communicate a boundary calmly?",
 ];
-
-const SAVED_SESSION_KEY = "emotional-support-session-id";
-const DISPLAY_MODE_KEY = "emotional-support-display-mode";
-const AUTH_TOKEN_KEY = "emotional-support-auth-token";
-const AUTH_USER_KEY = "emotional-support-auth-user";
-const IS_DEV_LOGIN_ENABLED =
-  import.meta.env.VITE_ENABLE_DEV_LOGIN === "true" ||
-  (import.meta.env.DEV &&
-    import.meta.env.VITE_ENABLE_DEV_LOGIN !== "false");
-
-function createId(): string {
-  return crypto.randomUUID();
-}
-
-function saveSessionId(sessionId: string) {
-  try {
-    localStorage.setItem(SAVED_SESSION_KEY, sessionId);
-  } catch {
-    // The session still works for the current page load.
-  }
-}
-
-function getSavedSessionId(): string {
-  try {
-    const existingSessionId = localStorage.getItem(SAVED_SESSION_KEY);
-    if (existingSessionId) {
-      return existingSessionId;
-    }
-
-    const sessionId = createId();
-    saveSessionId(sessionId);
-    return sessionId;
-  } catch {
-    return createId();
-  }
-}
-
-function getSavedDisplayMode(): DisplayMode {
-  try {
-    const savedMode = localStorage.getItem(DISPLAY_MODE_KEY);
-    if (savedMode === "light" || savedMode === "dark") {
-      return savedMode;
-    }
-  } catch {
-    // Fall back to the default when browser storage is unavailable.
-  }
-
-  return "light";
-}
-
-function getSavedAuth(): {
-  token: string | null;
-  user: AuthenticatedUser | null;
-} {
-  const rememberedAuth = readStoredAuth(localStorage);
-  if (rememberedAuth.token && rememberedAuth.user) {
-    return rememberedAuth;
-  }
-
-  return readStoredAuth(sessionStorage);
-}
-
-function readStoredAuth(storage: Storage): {
-  token: string | null;
-  user: AuthenticatedUser | null;
-} {
-  try {
-    const token = storage.getItem(AUTH_TOKEN_KEY);
-    const rawUser = storage.getItem(AUTH_USER_KEY);
-    if (!token || !rawUser) {
-      return { token: null, user: null };
-    }
-
-    return {
-      token,
-      user: JSON.parse(rawUser) as AuthenticatedUser,
-    };
-  } catch {
-    return { token: null, user: null };
-  }
-}
-
-function saveAuth(
-  token: string,
-  user: AuthenticatedUser,
-  rememberMe: boolean,
-) {
-  clearAuth();
-
-  const storage = rememberMe ? localStorage : sessionStorage;
-
-  try {
-    storage.setItem(AUTH_TOKEN_KEY, token);
-    storage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-  } catch {
-    // Auth remains available until the page reloads.
-  }
-}
-
-function clearAuth() {
-  try {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-    localStorage.removeItem(AUTH_USER_KEY);
-    sessionStorage.removeItem(AUTH_TOKEN_KEY);
-    sessionStorage.removeItem(AUTH_USER_KEY);
-  } catch {
-    // Local storage is best effort.
-  }
-}
-
-function isAuthRemembered(): boolean {
-  try {
-    return Boolean(localStorage.getItem(AUTH_TOKEN_KEY));
-  } catch {
-    return false;
-  }
-}
-
-function toDisplayMessage(message: SavedChatMessage): DisplayMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    riskLevel: message.risk_level ?? undefined,
-    createdAt: message.created_at,
-  };
-}
-
-function formatSavedDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function formatMessageTime(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function normalizeAssistantContent(content: string): string {
-  return content
-    .replace(/\r\n?/g, "\n")
-    .replace(/([^\n])\s+(\d+\.\s+)/g, "$1\n$2")
-    .replace(/([^\n])\s+([-*]\s+)/g, "$1\n$2");
-}
-
-function renderInlineMarkdown(text: string): ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
-    }
-
-    return part;
-  });
-}
-
-type ContentBlock =
-  | {
-      kind: "paragraph";
-      text: string;
-    }
-  | {
-      kind: "ordered-list";
-      items: string[];
-    }
-  | {
-      kind: "unordered-list";
-      items: string[];
-    };
-
-function parseAssistantContent(content: string): ContentBlock[] {
-  const lines = normalizeAssistantContent(content).split("\n");
-  const blocks: ContentBlock[] = [];
-  let paragraph: string[] = [];
-  let orderedItems: string[] = [];
-  let unorderedItems: string[] = [];
-
-  function flushParagraph() {
-    if (paragraph.length > 0) {
-      blocks.push({
-        kind: "paragraph",
-        text: paragraph.join(" "),
-      });
-      paragraph = [];
-    }
-  }
-
-  function flushOrderedItems() {
-    if (orderedItems.length > 0) {
-      blocks.push({
-        kind: "ordered-list",
-        items: orderedItems,
-      });
-      orderedItems = [];
-    }
-  }
-
-  function flushUnorderedItems() {
-    if (unorderedItems.length > 0) {
-      blocks.push({
-        kind: "unordered-list",
-        items: unorderedItems,
-      });
-      unorderedItems = [];
-    }
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-
-    if (!line) {
-      flushParagraph();
-      flushOrderedItems();
-      flushUnorderedItems();
-      continue;
-    }
-
-    const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
-    if (orderedMatch) {
-      flushParagraph();
-      flushUnorderedItems();
-      orderedItems.push(orderedMatch[1]);
-      continue;
-    }
-
-    const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
-    if (unorderedMatch) {
-      flushParagraph();
-      flushOrderedItems();
-      unorderedItems.push(unorderedMatch[1]);
-      continue;
-    }
-
-    flushOrderedItems();
-    flushUnorderedItems();
-    paragraph.push(line);
-  }
-
-  flushParagraph();
-  flushOrderedItems();
-  flushUnorderedItems();
-
-  return blocks.length > 0
-    ? blocks
-    : [
-        {
-          kind: "paragraph",
-          text: content,
-        },
-      ];
-}
-
-function MessageContent({
-  content,
-  role,
-}: {
-  content: string;
-  role: Role;
-}) {
-  if (role === "user") {
-    return (
-      <div className="message-content plain">
-        <p>{content}</p>
-      </div>
-    );
-  }
-
-  const blocks = parseAssistantContent(content);
-
-  return (
-    <div className="message-content formatted">
-      {blocks.map((block, index) => {
-        if (block.kind === "ordered-list") {
-          return (
-            <ol key={index}>
-              {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>
-                  {renderInlineMarkdown(item)}
-                </li>
-              ))}
-            </ol>
-          );
-        }
-
-        if (block.kind === "unordered-list") {
-          return (
-            <ul key={index}>
-              {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>
-                  {renderInlineMarkdown(item)}
-                </li>
-              ))}
-            </ul>
-          );
-        }
-
-        return <p key={index}>{renderInlineMarkdown(block.text)}</p>;
-      })}
-    </div>
-  );
-}
-
-function AuthPanel({
-  mode,
-  onModeChange,
-  onSubmit,
-  onDevLogin,
-  onRequestReset,
-  onConfirmReset,
-  isSubmitting,
-  error,
-}: {
-  mode: AuthMode;
-  onModeChange: (mode: AuthMode) => void;
-  onSubmit: (
-    mode: AuthMode,
-    displayName: string,
-    email: string,
-    password: string,
-    rememberMe: boolean,
-  ) => Promise<void>;
-  onDevLogin: (rememberMe: boolean) => Promise<void>;
-  onRequestReset: (email: string) => Promise<string | null>;
-  onConfirmReset: (
-    resetToken: string,
-    newPassword: string,
-    rememberMe: boolean,
-  ) => Promise<void>;
-  isSubmitting: boolean;
-  error: string | null;
-}) {
-  const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
-  const [isResetOpen, setIsResetOpen] = useState(false);
-  const [resetEmail, setResetEmail] = useState("");
-  const [resetToken, setResetToken] = useState("");
-  const [resetPassword, setResetPassword] = useState("");
-  const [resetNotice, setResetNotice] = useState<string | null>(null);
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void onSubmit(mode, displayName, email, password, rememberMe);
-  }
-
-  async function handleResetRequest(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const token = await onRequestReset(resetEmail || email);
-    if (token) {
-      setResetToken(token);
-      setResetNotice("Use the development reset code below.");
-    } else {
-      setResetNotice(
-        "If that email exists, a reset code has been prepared.",
-      );
-    }
-  }
-
-  async function handleResetConfirm(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await onConfirmReset(resetToken, resetPassword, rememberMe);
-  }
-
-  return (
-    <main className="app-shell auth-shell">
-      <section className="auth-card">
-        <div>
-          <p className="eyebrow">Safety-aware AI demo</p>
-          <h1>Emotional Support Guide</h1>
-          <p className="subtitle">
-            Sign in to keep saved chats private to your account.
-          </p>
-        </div>
-
-        <div className="segmented-control auth-toggle" role="group">
-          <button
-            type="button"
-            className={mode === "login" ? "active" : undefined}
-            onClick={() => onModeChange("login")}
-          >
-            Log in
-          </button>
-          <button
-            type="button"
-            className={mode === "register" ? "active" : undefined}
-            onClick={() => onModeChange("register")}
-          >
-            Sign up
-          </button>
-        </div>
-
-        <form className="auth-form" onSubmit={handleSubmit}>
-          {mode === "register" && (
-            <label>
-              Name
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                minLength={1}
-                maxLength={80}
-                required
-              />
-            </label>
-          )}
-
-          <label>
-            Email
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-            />
-          </label>
-
-          <label>
-            Password
-            <span className="password-field">
-              <input
-                type={isPasswordVisible ? "text" : "password"}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                minLength={8}
-                required
-              />
-              <button
-                className="password-toggle"
-                type="button"
-                onClick={() =>
-                  setIsPasswordVisible((current) => !current)
-                }
-              >
-                {isPasswordVisible ? "Hide" : "Show"}
-              </button>
-            </span>
-            <span className="auth-hint">
-              Use at least 8 characters for local testing.
-            </span>
-          </label>
-
-          <label className="remember-me-control">
-            <input
-              type="checkbox"
-              checked={rememberMe}
-              onChange={(event) => setRememberMe(event.target.checked)}
-            />
-            <span>Remember me on this device</span>
-          </label>
-
-          {error && (
-            <div className="error-banner auth-error" role="alert">
-              {error}
-            </div>
-          )}
-
-          <button
-            className="primary-button"
-            type="submit"
-            disabled={isSubmitting}
-          >
-            {isSubmitting
-              ? "Working..."
-              : mode === "register"
-                ? "Create account"
-                : "Log in"}
-          </button>
-        </form>
-
-        <div className="reset-login-panel">
-          <button
-            className="link-button"
-            type="button"
-            onClick={() => setIsResetOpen((current) => !current)}
-          >
-            {isResetOpen ? "Hide password reset" : "Forgot password?"}
-          </button>
-
-          {isResetOpen && (
-            <div className="reset-forms">
-              <form className="auth-form compact-auth-form" onSubmit={handleResetRequest}>
-                <label>
-                  Account email
-                  <input
-                    type="email"
-                    value={resetEmail}
-                    onChange={(event) =>
-                      setResetEmail(event.target.value)
-                    }
-                    placeholder={email || "you@example.com"}
-                    required
-                  />
-                </label>
-
-                <button
-                  className="secondary-button"
-                  type="submit"
-                  disabled={isSubmitting}
-                >
-                  Create reset code
-                </button>
-              </form>
-
-              <form className="auth-form compact-auth-form" onSubmit={handleResetConfirm}>
-                <label>
-                  Reset code
-                  <input
-                    value={resetToken}
-                    onChange={(event) =>
-                      setResetToken(event.target.value)
-                    }
-                    required
-                  />
-                </label>
-
-                <label>
-                  New password
-                  <input
-                    type="password"
-                    value={resetPassword}
-                    onChange={(event) =>
-                      setResetPassword(event.target.value)
-                    }
-                    minLength={8}
-                    required
-                  />
-                </label>
-
-                {resetNotice && (
-                  <p className="auth-notice">{resetNotice}</p>
-                )}
-
-                <button
-                  className="primary-button"
-                  type="submit"
-                  disabled={isSubmitting}
-                >
-                  Reset password
-                </button>
-              </form>
-            </div>
-          )}
-        </div>
-
-        {IS_DEV_LOGIN_ENABLED && (
-          <div className="dev-login-panel">
-            <p>Development only</p>
-            <button
-              className="secondary-button dev-login-button"
-              type="button"
-              onClick={() => void onDevLogin(rememberMe)}
-              disabled={isSubmitting}
-            >
-              Continue as developer
-            </button>
-          </div>
-        )}
-      </section>
-    </main>
-  );
-}
 
 export default function App() {
   const savedAuth = getSavedAuth();
@@ -661,6 +102,7 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const history = useMemo<ChatMessage[]>(
@@ -677,6 +119,13 @@ export default function App() {
       message.role === "assistant" &&
       (message.riskLevel === "high" ||
         message.riskLevel === "immediate"),
+  );
+  const settingsTabs = useMemo<SettingsTab[]>(
+    () =>
+      currentUser?.role === "admin"
+        ? ["general", "account", "privacy", "safety", "admin"]
+        : ["general", "account", "privacy", "safety"],
+    [currentUser?.role],
   );
 
   const filteredSavedChats = useMemo(
@@ -698,12 +147,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = displayMode;
     document.documentElement.style.colorScheme = displayMode;
-
-    try {
-      localStorage.setItem(DISPLAY_MODE_KEY, displayMode);
-    } catch {
-      // The selected mode still applies for the current session.
-    }
+    saveDisplayMode(displayMode);
   }, [displayMode]);
 
   useEffect(() => {
@@ -719,6 +163,39 @@ export default function App() {
   }, [authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      return;
+    }
+
+    const token = authToken;
+    let isCancelled = false;
+
+    async function refreshCurrentUser() {
+      try {
+        const user = await getCurrentUser(token);
+        if (isCancelled) {
+          return;
+        }
+
+        setCurrentUser(user);
+        saveAuth(token, user, isAuthRemembered());
+      } catch {
+        if (!isCancelled) {
+          clearAuth();
+          setAuthToken(null);
+          setCurrentUser(null);
+        }
+      }
+    }
+
+    void refreshCurrentUser();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [authToken]);
+
+  useEffect(() => {
     if (currentUser) {
       setProfileName(currentUser.display_name);
       setProfileEmail(currentUser.email);
@@ -730,6 +207,12 @@ export default function App() {
       void refreshAdminDashboard();
     }
   }, [settingsTab, authToken]);
+
+  useEffect(() => {
+    if (settingsTab === "admin" && currentUser?.role !== "admin") {
+      setSettingsTab("general");
+    }
+  }, [currentUser?.role, settingsTab]);
 
   useEffect(() => {
     if (!authToken) {
@@ -1102,6 +585,8 @@ export default function App() {
   async function copyMessage(content: string) {
     try {
       await navigator.clipboard.writeText(content);
+      setStatusMessage("Message copied.");
+      window.setTimeout(() => setStatusMessage(null), 1800);
     } catch {
       setError("Message could not be copied.");
     }
@@ -1306,7 +791,7 @@ export default function App() {
                       {chat.last_message_preview}
                     </span>
                     <span className="saved-chat-meta">
-                      {chat.message_count} messages ·{" "}
+                      {chat.message_count} messages -{" "}
                       {formatSavedDate(chat.updated_at)}
                     </span>
                   </button>
@@ -1331,7 +816,10 @@ export default function App() {
             <p className="eyebrow">Safety-aware AI demo</p>
             <h1>Emotional Support Guide</h1>
             <p className="subtitle">
-              Signed in as {currentUser.display_name}.
+              Signed in as {currentUser.display_name}.{" "}
+              {currentUser.role === "admin" && (
+                <span className="role-chip">Admin</span>
+              )}
             </p>
           </div>
 
@@ -1463,8 +951,8 @@ export default function App() {
                         {chat.last_message_preview}
                       </span>
                       <span className="saved-chat-meta">
-                        {chat.message_count} messages · Updated{" "}
-                        {formatSavedDate(chat.updated_at)} · Expires{" "}
+                        {chat.message_count} messages - Updated{" "}
+                        {formatSavedDate(chat.updated_at)} - Expires{" "}
                         {formatSavedDate(chat.expires_at)}
                       </span>
                     </button>
@@ -1508,26 +996,18 @@ export default function App() {
             </div>
 
             <div className="settings-tabs" role="tablist">
-              {(
-                [
-                  "general",
-                  "account",
-                  "privacy",
-                  "safety",
-                  "admin",
-                ] as SettingsTab[]
-              ).map((tabName) => (
-                  <button
-                    key={tabName}
-                    type="button"
-                    role="tab"
-                    aria-selected={settingsTab === tabName}
-                    className={settingsTab === tabName ? "active" : undefined}
-                    onClick={() => setSettingsTab(tabName)}
-                  >
-                    {tabName[0].toUpperCase() + tabName.slice(1)}
-                  </button>
-                ))}
+              {settingsTabs.map((tabName) => (
+                <button
+                  key={tabName}
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsTab === tabName}
+                  className={settingsTab === tabName ? "active" : undefined}
+                  onClick={() => setSettingsTab(tabName)}
+                >
+                  {tabName[0].toUpperCase() + tabName.slice(1)}
+                </button>
+              ))}
             </div>
 
             {settingsTab === "general" && (
@@ -1945,6 +1425,12 @@ export default function App() {
         {error && (
           <div className="error-banner" role="alert">
             {error}
+          </div>
+        )}
+
+        {statusMessage && (
+          <div className="status-toast" role="status">
+            {statusMessage}
           </div>
         )}
 

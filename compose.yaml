@@ -54,6 +54,7 @@ services:
       DATABASE_URL: postgresql://support_app:${POSTGRES_PASSWORD:-support_app_dev_password}@postgres:5432/emotional_support
       CHAT_RETENTION_DAYS: ${CHAT_RETENTION_DAYS:-10}
       CHAT_MAX_SAVED_CHATS: ${CHAT_MAX_SAVED_CHATS:-10}
+      ADMIN_EMAILS: '${ADMIN_EMAILS:-["developer@local.dev"]}'
     depends_on:
       postgres:
         condition: service_healthy
@@ -105,6 +106,7 @@ services:
       CHAT_SERVICE_URL: ${CHAT_SERVICE_URL:-http://chat-service:8002}
       SAVE_SERVICE_URL: ${SAVE_SERVICE_URL:-http://save-service:8003}
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-replace-this-development-auth-secret}
+      ADMIN_EMAILS: '${ADMIN_EMAILS:-["developer@local.dev"]}'
       CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}'
     depends_on:
       safety-service:

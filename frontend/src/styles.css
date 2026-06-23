@@ -87,6 +87,15 @@ button:disabled {
   opacity: 0.55;
 }
 
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .app-shell {
   min-height: 100vh;
   padding: 32px 16px;
@@ -421,6 +430,21 @@ h1 {
 .subtitle {
   margin-bottom: 0;
   color: var(--text-muted);
+}
+
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin-left: 8px;
+  padding: 3px 8px;
+  color: var(--accent);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 850;
+  text-transform: uppercase;
 }
 
 .settings-panel {
@@ -915,6 +939,10 @@ h1 {
   font-weight: 800;
 }
 
+.message-actions button:hover {
+  border-color: var(--accent-hover);
+}
+
 .message.user .message-actions button {
   color: var(--accent-contrast);
   background: transparent;
@@ -969,6 +997,16 @@ h1 {
   background: var(--error-bg);
 }
 
+.status-toast {
+  margin: 0 30px 16px;
+  padding: 11px 13px;
+  color: var(--accent);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  font-weight: 800;
+}
+
 .composer {
   padding: 20px 30px 28px;
   border-top: 1px solid var(--border-soft);
@@ -1021,11 +1059,20 @@ h1 {
   border: 1px solid var(--accent);
 }
 
+.primary-button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
 .secondary-button {
   padding: 9px 13px;
   color: var(--accent);
   background: var(--surface);
   border: 1px solid var(--border-strong);
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--accent-hover);
 }
 
 .danger-button {

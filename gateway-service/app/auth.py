@@ -25,6 +25,7 @@ def create_access_token(
         "sub": user.user_id,
         "email": user.email,
         "display_name": user.display_name,
+        "role": user.role,
         "iat": int(issued_at.timestamp()),
         "exp": int(expires_at.timestamp()),
     }
@@ -60,8 +61,18 @@ def get_current_user(
         user_id = str(payload["sub"])
         email = str(payload["email"])
         display_name = str(payload["display_name"])
+        role = str(payload.get("role", "user"))
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_token() from exc
+
+    if role not in {"user", "admin"}:
+        raise _invalid_token()
+    if email.strip().lower() in {
+        admin_email.strip().lower()
+        for admin_email in settings.admin_emails
+        if admin_email.strip()
+    }:
+        role = "admin"
 
     if datetime.now(timezone.utc).timestamp() >= expires_at:
         raise HTTPException(
@@ -73,7 +84,20 @@ def get_current_user(
         user_id=user_id,
         email=email,
         display_name=display_name,
+        role=role,
     )
+
+
+def require_admin_user(
+    authorization: str | None = Header(default=None),
+) -> AuthenticatedUser:
+    user = get_current_user(authorization)
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access is required.",
+        )
+    return user
 
 
 def _json_b64(payload: dict[str, Any]) -> str:

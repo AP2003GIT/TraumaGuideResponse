@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
         database_url=settings.database_url,
         retention_days=settings.chat_retention_days,
         max_saved_chats=settings.chat_max_saved_chats,
+        admin_emails=settings.admin_emails,
     )
     store.initialize()
     app.state.chat_store = store

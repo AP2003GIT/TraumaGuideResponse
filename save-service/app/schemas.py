@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 RiskLevel = Literal["standard", "elevated", "high", "immediate"]
 Role = Literal["user", "assistant"]
+UserRole = Literal["user", "admin"]
 
 
 class SaveTurnRequest(BaseModel):
@@ -53,6 +54,7 @@ class AuthenticatedUser(BaseModel):
     user_id: str
     email: str
     display_name: str
+    role: UserRole = "user"
 
 
 class ProfileUpdateRequest(BaseModel):

@@ -73,6 +73,20 @@ export async function continueAsDeveloper(): Promise<AuthResponse> {
   }
 }
 
+export async function getCurrentUser(
+  token: string,
+): Promise<AuthResponse["user"]> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+    headers: authHeaders(token),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as AuthResponse["user"];
+}
+
 export async function requestPasswordReset(
   email: string,
 ): Promise<PasswordResetRequestResponse> {

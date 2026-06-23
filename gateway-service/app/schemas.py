@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 RiskLevel = Literal["standard", "elevated", "high", "immediate"]
+UserRole = Literal["user", "admin"]
 
 
 class ChatMessage(BaseModel):
@@ -102,6 +103,7 @@ class AuthenticatedUser(BaseModel):
     user_id: str
     email: str
     display_name: str
+    role: UserRole = "user"
 
 
 class AuthResponse(BaseModel):

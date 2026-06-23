@@ -233,3 +233,31 @@ def test_admin_summary_counts_storage() -> None:
     assert summary.users >= 1
     assert summary.conversations >= 1
     assert summary.messages >= 2
+
+
+def test_admin_email_receives_admin_role() -> None:
+    assert TEST_DATABASE_URL is not None
+    email = f"admin-{uuid4()}@example.com"
+    store = ChatStore(
+        TEST_DATABASE_URL,
+        retention_days=10,
+        max_saved_chats=10,
+        admin_emails=[email],
+    )
+    store.initialize()
+
+    user = store.create_user(
+        RegisterRequest(
+            display_name="Admin User",
+            email=email,
+            password="test-password",
+        )
+    )
+
+    assert user.role == "admin"
+    assert (
+        store.authenticate_user(
+            AuthRequest(email=email, password="test-password")
+        ).role
+        == "admin"
+    )
