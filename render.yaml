@@ -1,21 +1,89 @@
 services:
+  - type: pserv
+    name: trauma-guide-safety
+    runtime: python
+    rootDir: safety-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8001
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SAFETY_MODEL
+        value: gemini-2.5-flash-lite
+
+  - type: pserv
+    name: trauma-guide-chat
+    runtime: python
+    rootDir: chat-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8002
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CHAT_MODEL
+        value: gemini-2.5-flash
+
+  - type: pserv
+    name: trauma-guide-save
+    runtime: python
+    rootDir: save-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8003
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trauma-guide-db
+          property: connectionString
+      - key: CHAT_RETENTION_DAYS
+        value: 10
+      - key: CHAT_MAX_SAVED_CHATS
+        value: 10
+      - key: ADMIN_EMAILS
+        value: '["developer@local.dev"]'
+
   - type: web
     name: trauma-guide-gateway
     runtime: python
+    rootDir: gateway-service
     buildCommand: pip install -r requirements.txt
-    startCommand: cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.13
       - key: AUTH_TOKEN_SECRET
-        sync: false
-      - key: SAFETY_SERVICE_URL
-        sync: false
-      - key: CHAT_SERVICE_URL
-        sync: false
-      - key: SAVE_SERVICE_URL
-        sync: false
+        generateValue: true
+      - key: SAFETY_SERVICE_HOST
+        fromService:
+          type: pserv
+          name: trauma-guide-safety
+          property: host
+      - key: SAFETY_SERVICE_PORT
+        value: 8001
+      - key: CHAT_SERVICE_HOST
+        fromService:
+          type: pserv
+          name: trauma-guide-chat
+          property: host
+      - key: CHAT_SERVICE_PORT
+        value: 8002
+      - key: SAVE_SERVICE_HOST
+        fromService:
+          type: pserv
+          name: trauma-guide-save
+          property: host
+      - key: SAVE_SERVICE_PORT
+        value: 8003
+      - key: CORS_ORIGINS
+        value: '["http://localhost:5173","http://127.0.0.1:5173","https://trauma-guide-frontend.onrender.com","https://traumaguideresponse.onrender.com"]'
+      - key: ADMIN_EMAILS
+        value: '["developer@local.dev"]'
 
   - type: web
     name: trauma-guide-frontend
@@ -32,3 +100,9 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
+
+databases:
+  - name: trauma-guide-db
+    databaseName: emotional_support
+    user: support_app
+    ipAllowList: []

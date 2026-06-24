@@ -235,13 +235,36 @@ The main tables are `users`, `password_reset_tokens`, `conversations`,
 
 ## Render Deployment
 
-The Render blueprint in `render.yaml` defines two public services:
+The Render blueprint in `render.yaml` can deploy the whole application:
 
-* `trauma-guide-gateway`, the FastAPI gateway API.
-* `trauma-guide-frontend`, the React static site.
+```text
+React static site
+        |
+        v
+Gateway web service
+   |           |          |
+   v           v          v
+Safety pserv  Chat pserv Save pserv
+                          |
+                          v
+                    Render Postgres
+```
 
-The gateway URL is an API URL. Seeing a response like this at `/` means the
-backend is running correctly:
+The public services are:
+
+* `trauma-guide-frontend`, the React static site users open in the browser.
+* `trauma-guide-gateway`, the FastAPI gateway API used by the frontend.
+
+The internal services are private Render services:
+
+* `trauma-guide-safety`
+* `trauma-guide-chat`
+* `trauma-guide-save`
+
+The database is managed by Render as `trauma-guide-db`.
+
+The gateway URL is still an API URL. Seeing a response like this at `/` means
+the backend is running correctly:
 
 ```json
 {"service":"gateway-service","status":"running","docs":"/docs"}
@@ -251,15 +274,50 @@ Open `/docs` on the gateway URL for Swagger, or `/health` for the Render health
 check. The browser UI should be opened from the frontend static-site URL, not
 from the gateway URL.
 
-If creating the services manually in Render, use these settings:
+When creating the Blueprint, Render prompts for these secrets:
+
+* `GEMINI_API_KEY` on `trauma-guide-safety`
+* `GEMINI_API_KEY` on `trauma-guide-chat`
+
+Render generates `AUTH_TOKEN_SECRET` for the gateway automatically. The save
+service receives `DATABASE_URL` from the managed Render Postgres database.
+
+If creating the services manually in Render instead of using the Blueprint,
+use these settings:
+
+Safety private service:
+
+* Root directory: `safety-service`
+* Build command: `pip install -r requirements.txt`
+* Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8001`
+* Environment variables: `GEMINI_API_KEY`,
+  `SAFETY_MODEL=gemini-2.5-flash-lite`
+
+Chat private service:
+
+* Root directory: `chat-service`
+* Build command: `pip install -r requirements.txt`
+* Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8002`
+* Environment variables: `GEMINI_API_KEY`,
+  `CHAT_MODEL=gemini-2.5-flash`
+
+Save private service:
+
+* Root directory: `save-service`
+* Build command: `pip install -r requirements.txt`
+* Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8003`
+* Environment variables: `DATABASE_URL`, `CHAT_RETENTION_DAYS=10`,
+  `CHAT_MAX_SAVED_CHATS=10`, and `ADMIN_EMAILS`
 
 Gateway web service:
 
+* Root directory: `gateway-service`
 * Build command: `pip install -r requirements.txt`
-* Start command: `cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
+* Start command: `gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
 * Health check path: `/health`
-* Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_URL`,
-  `CHAT_SERVICE_URL`, and `SAVE_SERVICE_URL`
+* Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_HOST`,
+  `CHAT_SERVICE_HOST`, `SAVE_SERVICE_HOST`, `SAFETY_SERVICE_PORT=8001`,
+  `CHAT_SERVICE_PORT=8002`, `SAVE_SERVICE_PORT=8003`, and `CORS_ORIGINS`
 
 Frontend static site:
 
@@ -271,10 +329,11 @@ Frontend static site:
   * `VITE_API_BASE_URL=https://traumaguideresponse.onrender.com`
   * `VITE_ENABLE_DEV_LOGIN=true`
 
-For the full production app, deploy the safety, chat, and save services too, or
-point the gateway environment variables at already-running instances of those
-services. The local Docker Compose setup starts all microservices together.
-
+Private services are not available on Render's free service plan, so the full
+microservice deployment can require paid service instances. For a cheaper demo,
+deploy only the gateway and frontend, then wire the gateway to already-running
+safety, chat, and save services.
+ 
 ## Test Each Service Independently
 
 ### Safety service
