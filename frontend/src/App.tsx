@@ -41,7 +41,6 @@ import {
 import {
   createId,
   formatMessageTime,
-  formatSavedDate,
   getSavedSessionId,
   saveSessionId,
   toDisplayMessage,
@@ -49,9 +48,15 @@ import {
 } from "./chatHelpers";
 import { AuthPanel, type AuthMode } from "./components/AuthPanel";
 import { MessageContent } from "./components/MessageContent";
-
-type SettingsTab = "general" | "account" | "privacy" | "safety" | "admin";
-type ExportScope = "all" | "current";
+import {
+  SavedChatsPanel,
+  SavedChatsSidebar,
+} from "./components/SavedChats";
+import {
+  SettingsPanel,
+  type ExportScope,
+  type SettingsTab,
+} from "./components/SettingsPanel";
 
 const starterPrompts = [
   "I feel overwhelmed and need a grounding exercise.",
@@ -734,81 +739,21 @@ export default function App() {
   return (
     <main className="app-shell">
       <div className="chat-layout">
-        <aside className="saved-sidebar" aria-labelledby="sidebar-heading">
-          <div className="saved-sidebar-header">
-            <div>
-              <h2 id="sidebar-heading">Saved chats</h2>
-              <p>
-                {savedChats.length}/{savedChatsLimit} saved
-              </p>
-            </div>
-
-            <button
-              className="primary-button compact-button"
-              type="button"
-              onClick={startNewChat}
-              disabled={isSending}
-            >
-              New
-            </button>
-          </div>
-
-          <label className="sidebar-search">
-            Search chats
-            <input
-              value={savedChatSearch}
-              onChange={(event) => setSavedChatSearch(event.target.value)}
-              placeholder="Search saved chats"
-            />
-          </label>
-
-          <div className="sidebar-list" aria-label="Saved chats">
-            {isLoadingSavedChats ? (
-              <div className="saved-chats-empty">Loading saved chats...</div>
-            ) : filteredSavedChats.length === 0 ? (
-              <div className="saved-chats-empty">
-                {savedChatSearch
-                  ? "No saved chats match your search."
-                  : "Saved chats will appear here after a reply is stored."}
-              </div>
-            ) : (
-              filteredSavedChats.map((chat) => (
-                <article
-                  key={chat.session_id}
-                  className={
-                    chat.session_id === sessionId
-                      ? "sidebar-chat active"
-                      : "sidebar-chat"
-                  }
-                >
-                  <button
-                    type="button"
-                    className="sidebar-chat-open"
-                    onClick={() => openSavedChat(chat.session_id)}
-                  >
-                    <span className="saved-chat-title">{chat.title}</span>
-                    <span className="saved-chat-preview">
-                      {chat.last_message_preview}
-                    </span>
-                    <span className="saved-chat-meta">
-                      {chat.message_count} messages -{" "}
-                      {formatSavedDate(chat.updated_at)}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="saved-chat-delete icon-delete"
-                    onClick={() => void deleteSavedChat(chat.session_id)}
-                    aria-label={`Delete saved chat: ${chat.title}`}
-                  >
-                    Delete
-                  </button>
-                </article>
-              ))
-            )}
-          </div>
-        </aside>
+        <SavedChatsSidebar
+          chats={filteredSavedChats}
+          activeSessionId={sessionId}
+          savedChatsCount={savedChats.length}
+          savedChatsLimit={savedChatsLimit}
+          search={savedChatSearch}
+          onSearchChange={setSavedChatSearch}
+          onOpenChat={openSavedChat}
+          onDeleteChat={(sessionIdToDelete) =>
+            void deleteSavedChat(sessionIdToDelete)
+          }
+          onStartNewChat={startNewChat}
+          isLoading={isLoadingSavedChats}
+          isSending={isSending}
+        />
 
         <section className="chat-card">
         <header className="app-header">
@@ -869,413 +814,55 @@ export default function App() {
         </header>
 
         {isSavedChatsOpen && (
-          <section
-            id="saved-chats-panel"
-            className="saved-chats-panel"
-            aria-labelledby="saved-chats-heading"
-          >
-            <div className="saved-chats-header">
-              <div>
-                <h2 id="saved-chats-heading">Saved chats</h2>
-                <p>
-                  {savedChats.length}/{savedChatsLimit} saved
-                </p>
-              </div>
-
-              <div className="saved-chats-actions">
-                <button
-                  className="secondary-button compact-button"
-                  type="button"
-                  onClick={startNewChat}
-                  disabled={isSending}
-                >
-                  New chat
-                </button>
-
-                <button
-                  className="secondary-button compact-button"
-                  type="button"
-                  onClick={() => setIsSavedChatsOpen(false)}
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-
-            <label className="sidebar-search panel-search">
-              Search chats
-              <input
-                value={savedChatSearch}
-                onChange={(event) =>
-                  setSavedChatSearch(event.target.value)
-                }
-                placeholder="Search saved chats"
-              />
-            </label>
-
-            {isLoadingSavedChats ? (
-              <div className="saved-chats-empty">
-                Loading saved chats...
-              </div>
-            ) : filteredSavedChats.length === 0 ? (
-              <div className="saved-chats-empty">
-                {savedChatSearch
-                  ? "No saved chats match your search."
-                  : "Saved chats will appear here after a reply is stored."}
-              </div>
-            ) : (
-              <div
-                className="saved-chat-list"
-                aria-label="Saved chats"
-              >
-                {filteredSavedChats.map((chat) => (
-                  <article
-                    key={chat.session_id}
-                    className={
-                      chat.session_id === sessionId
-                        ? "saved-chat-item active"
-                        : "saved-chat-item"
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="saved-chat-open"
-                      onClick={() =>
-                        openSavedChat(chat.session_id)
-                      }
-                    >
-                      <span className="saved-chat-title">
-                        {chat.title}
-                      </span>
-                      <span className="saved-chat-preview">
-                        {chat.last_message_preview}
-                      </span>
-                      <span className="saved-chat-meta">
-                        {chat.message_count} messages - Updated{" "}
-                        {formatSavedDate(chat.updated_at)} - Expires{" "}
-                        {formatSavedDate(chat.expires_at)}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      className="saved-chat-delete"
-                      onClick={() =>
-                        void deleteSavedChat(chat.session_id)
-                      }
-                      aria-label={`Delete saved chat: ${chat.title}`}
-                    >
-                      Delete
-                    </button>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+          <SavedChatsPanel
+            chats={filteredSavedChats}
+            activeSessionId={sessionId}
+            savedChatsCount={savedChats.length}
+            savedChatsLimit={savedChatsLimit}
+            search={savedChatSearch}
+            onSearchChange={setSavedChatSearch}
+            onOpenChat={openSavedChat}
+            onDeleteChat={(sessionIdToDelete) =>
+              void deleteSavedChat(sessionIdToDelete)
+            }
+            onStartNewChat={startNewChat}
+            onClose={() => setIsSavedChatsOpen(false)}
+            isLoading={isLoadingSavedChats}
+            isSending={isSending}
+          />
         )}
 
         {isSettingsOpen && (
-          <section
-            id="settings-panel"
-            className="settings-panel"
-            aria-labelledby="settings-heading"
-          >
-            <div className="settings-header">
-              <div>
-                <h2 id="settings-heading">Settings</h2>
-                <p>{settingsTab[0].toUpperCase() + settingsTab.slice(1)}</p>
-              </div>
-
-              <button
-                className="secondary-button compact-button"
-                type="button"
-                onClick={() => setIsSettingsOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="settings-tabs" role="tablist">
-              {settingsTabs.map((tabName) => (
-                <button
-                  key={tabName}
-                  type="button"
-                  role="tab"
-                  aria-selected={settingsTab === tabName}
-                  className={settingsTab === tabName ? "active" : undefined}
-                  onClick={() => setSettingsTab(tabName)}
-                >
-                  {tabName[0].toUpperCase() + tabName.slice(1)}
-                </button>
-              ))}
-            </div>
-
-            {settingsTab === "general" && (
-              <div className="setting-row">
-                <div>
-                  <h3>Display mode</h3>
-                  <p>Choose how the app appears on this device.</p>
-                </div>
-
-                <div
-                  className="segmented-control"
-                  role="group"
-                  aria-label="Display mode"
-                >
-                  <button
-                    type="button"
-                    className={
-                      displayMode === "light" ? "active" : undefined
-                    }
-                    aria-pressed={displayMode === "light"}
-                    onClick={() => setDisplayMode("light")}
-                  >
-                    Light
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      displayMode === "dark" ? "active" : undefined
-                    }
-                    aria-pressed={displayMode === "dark"}
-                    onClick={() => setDisplayMode("dark")}
-                  >
-                    Dark
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {settingsTab === "account" && (
-              <div className="settings-form-panel">
-                <div>
-                  <h3>Profile</h3>
-                  <p>Update your local account details.</p>
-                </div>
-
-                <div className="settings-form-grid">
-                  <label>
-                    Display name
-                    <input
-                      value={profileName}
-                      onChange={(event) =>
-                        setProfileName(event.target.value)
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Email
-                    <input
-                      type="email"
-                      value={profileEmail}
-                      onChange={(event) =>
-                        setProfileEmail(event.target.value)
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Current password
-                    <input
-                      type="password"
-                      value={profileCurrentPassword}
-                      onChange={(event) =>
-                        setProfileCurrentPassword(event.target.value)
-                      }
-                      placeholder="Required for password changes"
-                    />
-                  </label>
-
-                  <label>
-                    New password
-                    <input
-                      type="password"
-                      value={profileNewPassword}
-                      onChange={(event) =>
-                        setProfileNewPassword(event.target.value)
-                      }
-                      minLength={8}
-                    />
-                  </label>
-                </div>
-
-                {profileStatus && (
-                  <p className="settings-status">{profileStatus}</p>
-                )}
-
-                <div className="privacy-actions">
-                  <button
-                    className="primary-button"
-                    type="button"
-                    onClick={() => void saveProfile()}
-                  >
-                    Save profile
-                  </button>
-
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={signOut}
-                  >
-                    Log out
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {settingsTab === "privacy" && (
-              <div className="settings-form-panel">
-                <div>
-                  <h3>Privacy</h3>
-                  <p>Export saved chats or delete your account data.</p>
-                </div>
-
-                <div className="settings-form-grid">
-                  <label>
-                    Export scope
-                    <select
-                      value={exportScope}
-                      onChange={(event) =>
-                        setExportScope(event.target.value as ExportScope)
-                      }
-                    >
-                      <option value="all">All saved chats</option>
-                      <option value="current">Current chat only</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    From date
-                    <input
-                      type="date"
-                      value={exportFromDate}
-                      onChange={(event) =>
-                        setExportFromDate(event.target.value)
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    To date
-                    <input
-                      type="date"
-                      value={exportToDate}
-                      onChange={(event) =>
-                        setExportToDate(event.target.value)
-                      }
-                    />
-                  </label>
-                </div>
-
-                <div className="privacy-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => void exportSavedChats()}
-                  >
-                    Export chats
-                  </button>
-
-                  <button
-                    className="danger-button"
-                    type="button"
-                    onClick={() => void deleteAccount()}
-                  >
-                    Delete account
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {settingsTab === "safety" && (
-              <div className="setting-row safety-setting">
-                <div>
-                  <h3>Safety resources</h3>
-                  <p>
-                    If there is immediate danger, contact emergency services.
-                    In the U.S., 988 offers free crisis support.
-                  </p>
-                </div>
-
-                <div className="crisis-actions">
-                  <a className="crisis-action" href="tel:988">
-                    Call 988
-                  </a>
-                  <a className="crisis-action" href="sms:988">
-                    Text 988
-                  </a>
-                  <a
-                    className="crisis-action"
-                    href="https://chat.988lifeline.org/"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open 988 chat
-                  </a>
-                </div>
-              </div>
-            )}
-
-            {settingsTab === "admin" && (
-              <div className="settings-form-panel">
-                <div className="admin-dashboard-heading">
-                  <div>
-                    <h3>Service dashboard</h3>
-                    <p>Internal development health and storage summary.</p>
-                  </div>
-
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => void refreshAdminDashboard()}
-                    disabled={isLoadingAdminDashboard}
-                  >
-                    Refresh
-                  </button>
-                </div>
-
-                {isLoadingAdminDashboard ? (
-                  <p className="settings-status">Loading dashboard...</p>
-                ) : adminDashboard ? (
-                  <div className="admin-dashboard-grid">
-                    {Object.entries(adminDashboard.dependencies).map(
-                      ([service, statusText]) => (
-                        <div className="admin-metric" key={service}>
-                          <span>{service.replace("_", " ")}</span>
-                          <strong>{statusText}</strong>
-                        </div>
-                      ),
-                    )}
-
-                    <div className="admin-metric">
-                      <span>Users</span>
-                      <strong>{adminDashboard.storage.users}</strong>
-                    </div>
-                    <div className="admin-metric">
-                      <span>Conversations</span>
-                      <strong>
-                        {adminDashboard.storage.conversations}
-                      </strong>
-                    </div>
-                    <div className="admin-metric">
-                      <span>Messages</span>
-                      <strong>{adminDashboard.storage.messages}</strong>
-                    </div>
-                    <div className="admin-metric">
-                      <span>Expiring soon</span>
-                      <strong>{adminDashboard.storage.expiring_soon}</strong>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="settings-status">
-                    Open this tab to load service health.
-                  </p>
-                )}
-              </div>
-            )}
-          </section>
+          <SettingsPanel
+            activeTab={settingsTab}
+            tabs={settingsTabs}
+            displayMode={displayMode}
+            profileName={profileName}
+            profileEmail={profileEmail}
+            profileCurrentPassword={profileCurrentPassword}
+            profileNewPassword={profileNewPassword}
+            profileStatus={profileStatus}
+            exportScope={exportScope}
+            exportFromDate={exportFromDate}
+            exportToDate={exportToDate}
+            adminDashboard={adminDashboard}
+            isLoadingAdminDashboard={isLoadingAdminDashboard}
+            onClose={() => setIsSettingsOpen(false)}
+            onTabChange={setSettingsTab}
+            onDisplayModeChange={setDisplayMode}
+            onProfileNameChange={setProfileName}
+            onProfileEmailChange={setProfileEmail}
+            onProfileCurrentPasswordChange={setProfileCurrentPassword}
+            onProfileNewPasswordChange={setProfileNewPassword}
+            onExportScopeChange={setExportScope}
+            onExportFromDateChange={setExportFromDate}
+            onExportToDateChange={setExportToDate}
+            onSaveProfile={() => void saveProfile()}
+            onSignOut={signOut}
+            onExportSavedChats={() => void exportSavedChats()}
+            onDeleteAccount={() => void deleteAccount()}
+            onRefreshAdminDashboard={() => void refreshAdminDashboard()}
+          />
         )}
 
         {hasCrisisRisk && (
