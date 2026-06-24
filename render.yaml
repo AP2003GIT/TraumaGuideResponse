@@ -10,3 +10,25 @@ services:
         value: 3.12.13
       - key: AUTH_TOKEN_SECRET
         sync: false
+      - key: SAFETY_SERVICE_URL
+        sync: false
+      - key: CHAT_SERVICE_URL
+        sync: false
+      - key: SAVE_SERVICE_URL
+        sync: false
+
+  - type: web
+    name: trauma-guide-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://traumaguideresponse.onrender.com
+      - key: VITE_ENABLE_DEV_LOGIN
+        value: true
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

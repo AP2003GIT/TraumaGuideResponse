@@ -233,6 +233,48 @@ Register a new server in pgAdmin4 with:
 The main tables are `users`, `password_reset_tokens`, `conversations`,
 `messages`, and `schema_migrations`.
 
+## Render Deployment
+
+The Render blueprint in `render.yaml` defines two public services:
+
+* `trauma-guide-gateway`, the FastAPI gateway API.
+* `trauma-guide-frontend`, the React static site.
+
+The gateway URL is an API URL. Seeing a response like this at `/` means the
+backend is running correctly:
+
+```json
+{"service":"gateway-service","status":"running","docs":"/docs"}
+```
+
+Open `/docs` on the gateway URL for Swagger, or `/health` for the Render health
+check. The browser UI should be opened from the frontend static-site URL, not
+from the gateway URL.
+
+If creating the services manually in Render, use these settings:
+
+Gateway web service:
+
+* Build command: `pip install -r requirements.txt`
+* Start command: `cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
+* Health check path: `/health`
+* Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_URL`,
+  `CHAT_SERVICE_URL`, and `SAVE_SERVICE_URL`
+
+Frontend static site:
+
+* Root directory: `frontend`
+* Build command: `npm install && npm run build`
+* Publish directory: `dist`
+* Rewrite rule: `/*` to `/index.html`
+* Environment variables:
+  * `VITE_API_BASE_URL=https://traumaguideresponse.onrender.com`
+  * `VITE_ENABLE_DEV_LOGIN=true`
+
+For the full production app, deploy the safety, chat, and save services too, or
+point the gateway environment variables at already-running instances of those
+services. The local Docker Compose setup starts all microservices together.
+
 ## Test Each Service Independently
 
 ### Safety service
