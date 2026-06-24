@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
+from pathlib import Path as FilePath
 from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.auth import create_access_token, get_current_user, require_admin_user
 from app.clients import (
@@ -41,6 +44,9 @@ from app.schemas import (
 )
 
 settings = get_settings()
+FRONTEND_DIST = FilePath(__file__).resolve().parents[2] / "frontend" / "dist"
+FRONTEND_INDEX = FRONTEND_DIST / "index.html"
+FRONTEND_ASSETS = FRONTEND_DIST / "assets"
 
 
 def _service_unavailable(
@@ -84,9 +90,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if FRONTEND_ASSETS.exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=FRONTEND_ASSETS),
+        name="frontend-assets",
+    )
+
 
 @app.get("/", tags=["system"])
-async def root() -> dict[str, str]:
+async def root():
+    if FRONTEND_INDEX.exists():
+        return FileResponse(FRONTEND_INDEX)
+
     return {
         "service": "gateway-service",
         "status": "running",
@@ -675,3 +691,10 @@ async def delete_saved_conversation(
         return deletion
     except DownstreamServiceError as exc:
         raise _service_unavailable(exc, request_id) from exc
+
+
+if FRONTEND_INDEX.exists():
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend_app(full_path: str):
+        return FileResponse(FRONTEND_INDEX)

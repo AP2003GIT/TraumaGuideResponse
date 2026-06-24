@@ -238,10 +238,9 @@ The main tables are `users`, `password_reset_tokens`, `conversations`,
 The Render blueprint in `render.yaml` can deploy the whole application:
 
 ```text
-React static site
-        |
-        v
 Gateway web service
+serves React at /
+serves API at /api
    |           |          |
    v           v          v
 Safety pserv  Chat pserv Save pserv
@@ -250,10 +249,9 @@ Safety pserv  Chat pserv Save pserv
                     Render Postgres
 ```
 
-The public services are:
-
-* `trauma-guide-frontend`, the React static site users open in the browser.
-* `trauma-guide-gateway`, the FastAPI gateway API used by the frontend.
+The public service is `trauma-guide-gateway`. It serves the built React app at
+`/`, the public API at `/api/*`, Swagger at `/docs`, and health checks at
+`/health`.
 
 The internal services are private Render services:
 
@@ -263,16 +261,9 @@ The internal services are private Render services:
 
 The database is managed by Render as `trauma-guide-db`.
 
-The gateway URL is still an API URL. Seeing a response like this at `/` means
-the backend is running correctly:
-
-```json
-{"service":"gateway-service","status":"running","docs":"/docs"}
-```
-
-Open `/docs` on the gateway URL for Swagger, or `/health` for the Render health
-check. The browser UI should be opened from the frontend static-site URL, not
-from the gateway URL.
+After the gateway build runs, open the gateway URL itself to use the browser
+app. If the frontend build output is missing, `/` falls back to a small JSON
+gateway status response so deployment problems are easier to diagnose.
 
 When creating the Blueprint, Render prompts for these secrets:
 
@@ -311,28 +302,19 @@ Save private service:
 
 Gateway web service:
 
-* Root directory: `gateway-service`
-* Build command: `pip install -r requirements.txt`
-* Start command: `gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
+* Root directory: repository root
+* Build command: `pip install -r requirements.txt && cd frontend && npm install && npm run build`
+* Start command: `cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
 * Health check path: `/health`
 * Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_HOST`,
   `CHAT_SERVICE_HOST`, `SAVE_SERVICE_HOST`, `SAFETY_SERVICE_PORT=8001`,
-  `CHAT_SERVICE_PORT=8002`, `SAVE_SERVICE_PORT=8003`, and `CORS_ORIGINS`
-
-Frontend static site:
-
-* Root directory: `frontend`
-* Build command: `npm install && npm run build`
-* Publish directory: `dist`
-* Rewrite rule: `/*` to `/index.html`
-* Environment variables:
-  * `VITE_API_BASE_URL=https://traumaguideresponse.onrender.com`
-  * `VITE_ENABLE_DEV_LOGIN=true`
+  `CHAT_SERVICE_PORT=8002`, `SAVE_SERVICE_PORT=8003`, `CORS_ORIGINS`,
+  `VITE_API_BASE_URL=""`, and `VITE_ENABLE_DEV_LOGIN=true`
 
 Private services are not available on Render's free service plan, so the full
 microservice deployment can require paid service instances. For a cheaper demo,
-deploy only the gateway and frontend, then wire the gateway to already-running
-safety, chat, and save services.
+deploy only the gateway, then wire it to already-running safety, chat, and save
+services.
  
 ## Test Each Service Independently
 
