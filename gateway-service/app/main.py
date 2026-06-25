@@ -17,6 +17,14 @@ from app.clients import (
     post_model,
 )
 from app.config import get_settings
+from app.local_demo import (
+    AccountAlreadyExistsError,
+    ConversationNotFoundError,
+    InvalidCredentialsError,
+    InvalidResetTokenError,
+    LocalDemoStore,
+    UserNotFoundError,
+)
 from app.rate_limit import check_rate_limit
 from app.schemas import (
     AccountExport,
@@ -68,6 +76,11 @@ async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(settings.request_timeout_seconds)
     )
+    app.state.demo_store = LocalDemoStore(
+        retention_days=settings.chat_retention_days,
+        max_saved_chats=settings.chat_max_saved_chats,
+        admin_emails=settings.admin_emails,
+    )
     yield
     await app.state.http_client.aclose()
 
@@ -96,6 +109,14 @@ if FRONTEND_ASSETS.exists():
         StaticFiles(directory=FRONTEND_ASSETS),
         name="frontend-assets",
     )
+
+
+def demo_store(request: Request) -> LocalDemoStore:
+    return request.app.state.demo_store
+
+
+def fallback_enabled() -> bool:
+    return settings.single_service_fallback
 
 
 @app.get("/", tags=["system"])
@@ -178,7 +199,16 @@ async def register(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with that email already exists.",
             ) from exc
-        raise _service_unavailable(exc, request_id)
+        if fallback_enabled():
+            try:
+                user = demo_store(request).create_user(payload)
+            except AccountAlreadyExistsError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with that email already exists.",
+                ) from fallback_exc
+        else:
+            raise _service_unavailable(exc, request_id)
 
     return AuthResponse(
         access_token=create_access_token(user, settings),
@@ -220,7 +250,16 @@ async def login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password.",
             ) from exc
-        raise _service_unavailable(exc, request_id)
+        if fallback_enabled():
+            try:
+                user = demo_store(request).authenticate_user(payload)
+            except InvalidCredentialsError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid email or password.",
+                ) from fallback_exc
+        else:
+            raise _service_unavailable(exc, request_id)
 
     return AuthResponse(
         access_token=create_access_token(user, settings),
@@ -261,6 +300,8 @@ async def request_password_reset(
         assert isinstance(reset_request, PasswordResetRequestResponse)
         return reset_request
     except DownstreamServiceError as exc:
+        if fallback_enabled():
+            return demo_store(request).request_password_reset(payload)
         raise _service_unavailable(exc, request_id)
 
 
@@ -301,7 +342,16 @@ async def confirm_password_reset(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired reset code.",
             ) from exc
-        raise _service_unavailable(exc, request_id)
+        if fallback_enabled():
+            try:
+                user = demo_store(request).confirm_password_reset(payload)
+            except InvalidResetTokenError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid or expired reset code.",
+                ) from fallback_exc
+        else:
+            raise _service_unavailable(exc, request_id)
 
     return AuthResponse(
         access_token=create_access_token(user, settings),
@@ -357,7 +407,29 @@ async def update_account_profile(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Current password is incorrect.",
             ) from exc
-        raise _service_unavailable(exc, request_id)
+        if fallback_enabled():
+            try:
+                updated_user = demo_store(request).update_user_profile(
+                    user.user_id,
+                    payload,
+                )
+            except AccountAlreadyExistsError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with that email already exists.",
+                ) from fallback_exc
+            except InvalidCredentialsError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Current password is incorrect.",
+                ) from fallback_exc
+            except UserNotFoundError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found.",
+                ) from fallback_exc
+        else:
+            raise _service_unavailable(exc, request_id)
 
     return AuthResponse(
         access_token=create_access_token(updated_user, settings),
@@ -391,6 +463,14 @@ async def export_account_data(
         assert isinstance(export, AccountExport)
         return export
     except DownstreamServiceError as exc:
+        if fallback_enabled():
+            try:
+                return demo_store(request).export_user_data(user.user_id)
+            except UserNotFoundError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found.",
+                ) from fallback_exc
         raise _service_unavailable(exc, request_id)
 
 
@@ -424,7 +504,10 @@ async def admin_dashboard(
         )
         assert isinstance(storage, AdminSummary)
     except DownstreamServiceError as exc:
-        raise _service_unavailable(exc, request_id)
+        if fallback_enabled():
+            storage = demo_store(request).admin_summary()
+        else:
+            raise _service_unavailable(exc, request_id)
 
     return AdminDashboard(
         dependencies=dependencies,
@@ -455,12 +538,21 @@ async def delete_account_data(
         assert isinstance(deletion, DeleteUserDataResponse)
         return deletion
     except DownstreamServiceError as exc:
+        if fallback_enabled():
+            deleted, deleted_conversations = demo_store(
+                request
+            ).delete_user_data(user.user_id)
+            return DeleteUserDataResponse(
+                deleted=deleted,
+                deleted_conversations=deleted_conversations,
+            )
         raise _service_unavailable(exc, request_id)
 
 
 async def save_exchange(
     *,
     client: httpx.AsyncClient,
+    request: Request,
     user_id: str,
     session_id: str | None,
     user_message: str,
@@ -494,6 +586,22 @@ async def save_exchange(
         assert isinstance(saved, SavedConversation)
         return True
     except DownstreamServiceError:
+        if fallback_enabled():
+            try:
+                demo_store(request).save_turn(
+                    user_id,
+                    session_id,
+                    SaveTurnRequest(
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                        risk_level=risk_level,
+                        model=model,
+                        request_id=request_id,
+                    ),
+                )
+                return True
+            except (ConversationNotFoundError, UserNotFoundError):
+                return False
         return False
 
 
@@ -536,6 +644,7 @@ async def chat(
 
             saved = await save_exchange(
                 client=client,
+                request=request,
                 user_id=user.user_id,
                 session_id=payload.session_id,
                 user_message=payload.message,
@@ -575,6 +684,7 @@ async def chat(
 
         saved = await save_exchange(
             client=client,
+            request=request,
             user_id=user.user_id,
             session_id=payload.session_id,
             user_message=payload.message,
@@ -594,8 +704,51 @@ async def chat(
         )
 
     except DownstreamServiceError as exc:
-        # Safety failure is fail-closed: no normal generation is attempted.
-        raise _service_unavailable(exc, request_id) from exc
+        if not fallback_enabled():
+            # Safety failure is fail-closed: no normal generation is attempted.
+            raise _service_unavailable(exc, request_id) from exc
+
+        assessment = demo_store(request).assess_risk(payload)
+        if assessment.risk_level in {"high", "immediate"}:
+            reply = assessment.safe_reply or (
+                "If you may be in immediate danger, contact emergency "
+                "services now or call/text 988 in the U.S. or Canada."
+            )
+            model = None
+        else:
+            generation = demo_store(request).generate_reply(
+                ChatGenerationRequest(
+                    message=payload.message,
+                    history=payload.history,
+                    risk_level=assessment.risk_level,
+                    needs_professional_support=(
+                        assessment.needs_professional_support
+                    ),
+                )
+            )
+            reply = generation.reply
+            model = generation.model
+
+        saved = await save_exchange(
+            client=client,
+            request=request,
+            user_id=user.user_id,
+            session_id=payload.session_id,
+            user_message=payload.message,
+            assistant_message=reply,
+            risk_level=assessment.risk_level,
+            model=model,
+            request_id=request_id,
+        )
+
+        return ChatResponse(
+            reply=reply,
+            risk_level=assessment.risk_level,
+            model=model,
+            request_id=request_id,
+            session_id=payload.session_id,
+            saved=saved,
+        )
 
 
 @app.get(
@@ -624,6 +777,14 @@ async def list_saved_conversations(
         assert isinstance(conversations, SavedConversationList)
         return conversations
     except DownstreamServiceError as exc:
+        if fallback_enabled():
+            try:
+                return demo_store(request).list_conversations(user.user_id)
+            except UserNotFoundError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found.",
+                ) from fallback_exc
         raise _service_unavailable(exc, request_id) from exc
 
 
@@ -660,6 +821,18 @@ async def get_saved_conversation(
                 detail="Saved conversation not found.",
             ) from exc
 
+        if fallback_enabled():
+            try:
+                return demo_store(request).get_conversation(
+                    user.user_id,
+                    session_id,
+                )
+            except ConversationNotFoundError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Saved conversation not found.",
+                ) from fallback_exc
+
         raise _service_unavailable(exc, request_id) from exc
 
 
@@ -690,6 +863,12 @@ async def delete_saved_conversation(
         assert isinstance(deletion, DeleteConversationResponse)
         return deletion
     except DownstreamServiceError as exc:
+        if fallback_enabled():
+            deleted = demo_store(request).delete_conversation(
+                user.user_id,
+                session_id,
+            )
+            return DeleteConversationResponse(deleted=deleted)
         raise _service_unavailable(exc, request_id) from exc
 
 

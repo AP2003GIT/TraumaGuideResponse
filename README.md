@@ -315,6 +315,13 @@ Private services are not available on Render's free service plan, so the full
 microservice deployment can require paid service instances. For a cheaper demo,
 deploy only the gateway, then wire it to already-running safety, chat, and save
 services.
+
+The gateway also includes `SINGLE_SERVICE_FALLBACK=true` for hosted demos. When
+the safety, chat, or save services are unavailable, the gateway falls back to a
+basic in-memory implementation for sign up, login, saved chats, risk checks,
+and non-AI supportive replies. This keeps the public Render URL usable as a
+demo, but data is not durable across service restarts. Use the full
+microservice and PostgreSQL setup for real persistence.
  
 ## Test Each Service Independently
 

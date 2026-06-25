@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     auth_rate_limit_per_minute: int = 12
     chat_rate_limit_per_minute: int = 20
     admin_rate_limit_per_minute: int = 30
+    single_service_fallback: bool = True
+    chat_retention_days: int = 10
+    chat_max_saved_chats: int = 10
     admin_emails: list[str] = []
     cors_origins: list[str] = [
         "http://localhost:5173",

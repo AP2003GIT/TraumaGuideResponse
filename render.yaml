@@ -83,6 +83,12 @@ services:
         value: '["http://localhost:5173","http://127.0.0.1:5173","https://traumaguideresponse.onrender.com"]'
       - key: ADMIN_EMAILS
         value: '["developer@local.dev"]'
+      - key: SINGLE_SERVICE_FALLBACK
+        value: true
+      - key: CHAT_RETENTION_DAYS
+        value: 10
+      - key: CHAT_MAX_SAVED_CHATS
+        value: 10
       - key: VITE_API_BASE_URL
         value: ""
       - key: VITE_ENABLE_DEV_LOGIN
