@@ -303,7 +303,7 @@ Save private service:
 Gateway web service:
 
 * Root directory: repository root
-* Build command: `pip install -r requirements.txt && cd frontend && npm install && npm run build`
+* Build command: `pip install -r requirements.txt && cd frontend && npm ci --no-audit --no-fund && npm run build`
 * Start command: `cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
 * Health check path: `/health`
 * Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_HOST`,
