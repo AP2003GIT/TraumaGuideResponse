@@ -243,17 +243,19 @@ serves React at /
 serves API at /api
    |           |          |
    v           v          v
-Safety pserv  Chat pserv Save pserv
+Safety web   Chat web   Save web
                           |
                           v
                     Render Postgres
 ```
 
-The public service is `trauma-guide-gateway`. It serves the built React app at
-`/`, the public API at `/api/*`, Swagger at `/docs`, and health checks at
-`/health`.
+The browser-facing service is `trauma-guide-gateway`. It serves the built React
+app at `/`, the public API at `/api/*`, Swagger at `/docs`, and health checks
+at `/health`.
 
-The internal services are private Render services:
+The backend services are also Render web services, but the gateway connects to
+them over Render's private network using Blueprint `fromService` host and port
+references:
 
 * `trauma-guide-safety`
 * `trauma-guide-chat`
@@ -276,27 +278,30 @@ service receives `DATABASE_URL` from the managed Render Postgres database.
 If creating the services manually in Render instead of using the Blueprint,
 use these settings:
 
-Safety private service:
+Safety web service:
 
 * Root directory: `safety-service`
 * Build command: `pip install -r requirements.txt`
-* Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8001`
+* Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+* Health check path: `/health`
 * Environment variables: `GEMINI_API_KEY`,
   `SAFETY_MODEL=gemini-2.5-flash-lite`
 
-Chat private service:
+Chat web service:
 
 * Root directory: `chat-service`
 * Build command: `pip install -r requirements.txt`
-* Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8002`
+* Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+* Health check path: `/health`
 * Environment variables: `GEMINI_API_KEY`,
   `CHAT_MODEL=gemini-2.5-flash`
 
-Save private service:
+Save web service:
 
 * Root directory: `save-service`
 * Build command: `pip install -r requirements.txt`
-* Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8003`
+* Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+* Health check path: `/health`
 * Environment variables: `DATABASE_URL`, `CHAT_RETENTION_DAYS=10`,
   `CHAT_MAX_SAVED_CHATS=10`, and `ADMIN_EMAILS`
 
@@ -307,14 +312,14 @@ Gateway web service:
 * Start command: `cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
 * Health check path: `/health`
 * Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_HOST`,
-  `CHAT_SERVICE_HOST`, `SAVE_SERVICE_HOST`, `SAFETY_SERVICE_PORT=8001`,
-  `CHAT_SERVICE_PORT=8002`, `SAVE_SERVICE_PORT=8003`, `CORS_ORIGINS`,
-  `VITE_API_BASE_URL=""`, and `VITE_ENABLE_DEV_LOGIN=true`
+  `CHAT_SERVICE_HOST`, `SAVE_SERVICE_HOST`, `SAFETY_SERVICE_PORT`,
+  `CHAT_SERVICE_PORT`, `SAVE_SERVICE_PORT`, `CORS_ORIGINS`,
+  `SINGLE_SERVICE_FALLBACK=true`, `VITE_API_BASE_URL=""`, and
+  `VITE_ENABLE_DEV_LOGIN=true`
 
-Private services are not available on Render's free service plan, so the full
-microservice deployment can require paid service instances. For a cheaper demo,
-deploy only the gateway, then wire it to already-running safety, chat, and save
-services.
+The Blueprint uses web services for all FastAPI apps so they can run without
+Render private-service instances. These service URLs are internet-reachable, so
+do not send sensitive data to this demo deployment.
 
 The gateway also includes `SINGLE_SERVICE_FALLBACK=true` for hosted demos. When
 the safety, chat, or save services are unavailable, the gateway falls back to a

@@ -1,10 +1,12 @@
 services:
-  - type: pserv
+  - type: web
     name: trauma-guide-safety
     runtime: python
+    plan: free
     rootDir: safety-service
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8001
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.13
@@ -13,12 +15,14 @@ services:
       - key: SAFETY_MODEL
         value: gemini-2.5-flash-lite
 
-  - type: pserv
+  - type: web
     name: trauma-guide-chat
     runtime: python
+    plan: free
     rootDir: chat-service
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8002
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.13
@@ -27,12 +31,14 @@ services:
       - key: CHAT_MODEL
         value: gemini-2.5-flash
 
-  - type: pserv
+  - type: web
     name: trauma-guide-save
     runtime: python
+    plan: free
     rootDir: save-service
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8003
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.13
@@ -50,6 +56,7 @@ services:
   - type: web
     name: trauma-guide-gateway
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: cd gateway-service && gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
     healthCheckPath: /health
@@ -60,25 +67,34 @@ services:
         generateValue: true
       - key: SAFETY_SERVICE_HOST
         fromService:
-          type: pserv
+          type: web
           name: trauma-guide-safety
           property: host
       - key: SAFETY_SERVICE_PORT
-        value: 8001
+        fromService:
+          type: web
+          name: trauma-guide-safety
+          property: port
       - key: CHAT_SERVICE_HOST
         fromService:
-          type: pserv
+          type: web
           name: trauma-guide-chat
           property: host
       - key: CHAT_SERVICE_PORT
-        value: 8002
+        fromService:
+          type: web
+          name: trauma-guide-chat
+          property: port
       - key: SAVE_SERVICE_HOST
         fromService:
-          type: pserv
+          type: web
           name: trauma-guide-save
           property: host
       - key: SAVE_SERVICE_PORT
-        value: 8003
+        fromService:
+          type: web
+          name: trauma-guide-save
+          property: port
       - key: CORS_ORIGINS
         value: '["http://localhost:5173","http://127.0.0.1:5173","https://traumaguideresponse.onrender.com"]'
       - key: ADMIN_EMAILS
