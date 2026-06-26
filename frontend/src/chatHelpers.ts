@@ -11,6 +11,8 @@ export interface DisplayMessage extends ChatMessage {
   status?: "failed";
 }
 
+// The current session id ties browser drafts, visible messages, and saved
+// backend conversations together.
 const SAVED_SESSION_KEY = "emotional-support-session-id";
 
 export function createId(): string {
@@ -43,6 +45,7 @@ export function getSavedSessionId(): string {
 export function toDisplayMessage(
   message: SavedChatMessage,
 ): DisplayMessage {
+  // Backend field names use snake_case; the React UI uses camelCase.
   return {
     id: message.id,
     role: message.role,
@@ -53,6 +56,7 @@ export function toDisplayMessage(
 }
 
 export function formatSavedDate(value: string): string {
+  // Used in saved-chat lists where both date and time help identify a chat.
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -62,6 +66,7 @@ export function formatSavedDate(value: string): string {
 }
 
 export function formatMessageTime(value: string): string {
+  // Used inside chat bubbles where the date is less important than the time.
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",

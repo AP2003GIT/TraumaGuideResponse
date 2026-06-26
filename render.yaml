@@ -101,6 +101,8 @@ services:
         value: '["developer@local.dev"]'
       - key: SINGLE_SERVICE_FALLBACK
         value: true
+      - key: FALLBACK_DATA_PATH
+        value: /var/data/local-demo-data.json
       - key: CHAT_RETENTION_DAYS
         value: 10
       - key: CHAT_MAX_SAVED_CHATS

@@ -4,11 +4,15 @@ import type {
   AuthResponse,
   ChatMessage,
   ChatResponse,
+  ConversationMetadataUpdate,
+  DependencyStatus,
   PasswordResetRequestResponse,
   SavedConversation,
   SavedConversationList,
 } from "./types";
 
+// In local dev the frontend talks to the gateway on port 8000. In production
+// this stays empty so requests are same-origin on Render.
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ??
   (import.meta.env.DEV ? "http://127.0.0.1:8000" : "");
@@ -17,6 +21,8 @@ interface ErrorBody {
   detail?: unknown;
 }
 
+// Every API wrapper throws a normal Error. Components can display the message
+// without knowing whether the backend returned text or structured JSON.
 async function getErrorMessage(response: Response): Promise<string> {
   let errorMessage = `Request failed with status ${response.status}.`;
 
@@ -25,7 +31,7 @@ async function getErrorMessage(response: Response): Promise<string> {
     if (typeof body.detail === "string") {
       errorMessage = body.detail;
     } else if (body.detail) {
-      errorMessage = JSON.stringify(body.detail);
+      errorMessage = getFriendlyDetailMessage(body.detail);
     }
   } catch {
     // Keep the default message when the response is not JSON.
@@ -34,12 +40,44 @@ async function getErrorMessage(response: Response): Promise<string> {
   return errorMessage;
 }
 
+// Gateway errors often include { service, message }. This turns those details
+// into user-facing text instead of showing raw JSON in the UI.
+function getFriendlyDetailMessage(detail: unknown): string {
+  if (!detail || typeof detail !== "object") {
+    return "The request could not be completed.";
+  }
+
+  const detailRecord = detail as Record<string, unknown>;
+  const service =
+    typeof detailRecord.service === "string"
+      ? detailRecord.service
+      : "one of the services";
+  const message =
+    typeof detailRecord.message === "string"
+      ? detailRecord.message
+      : "";
+
+  if (message.includes("Safety classification failed")) {
+    return (
+      "The safety check is unavailable right now. Retry in a moment or use "
+      + "local fallback mode for development."
+    );
+  }
+
+  if (message.includes("is unavailable") || message.includes("timed out")) {
+    return `${service} is unavailable right now. Please retry in a moment.`;
+  }
+
+  return `${service} could not complete the request. Please retry.`;
+}
+
 function authHeaders(token: string): HeadersInit {
   return {
     Authorization: `Bearer ${token}`,
   };
 }
 
+// Account creation/login both return a bearer token plus the current user.
 export async function registerAccount(
   displayName: string,
   email: string,
@@ -74,6 +112,7 @@ export async function continueAsDeveloper(): Promise<AuthResponse> {
   }
 }
 
+// Profile and password-reset endpoints support the settings/account screen.
 export async function getCurrentUser(
   token: string,
 ): Promise<AuthResponse["user"]> {
@@ -166,6 +205,8 @@ async function authRequest(
   return (await response.json()) as AuthResponse;
 }
 
+// Chat messages go through the gateway, which performs safety classification,
+// generation, and saving before responding.
 export async function sendChatMessage(
   message: string,
   history: ChatMessage[],
@@ -192,6 +233,8 @@ export async function sendChatMessage(
   return (await response.json()) as ChatResponse;
 }
 
+// Saved conversation endpoints power the sidebar, mobile panel, export flow,
+// pinning, renaming, and deletion.
 export async function getSavedConversation(
   sessionId: string,
   token: string,
@@ -245,6 +288,30 @@ export async function deleteSavedConversation(
   }
 }
 
+export async function updateSavedConversationMetadata(
+  sessionId: string,
+  token: string,
+  metadata: ConversationMetadataUpdate,
+): Promise<SavedConversation> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/conversations/${encodeURIComponent(sessionId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(token),
+      },
+      body: JSON.stringify(metadata),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as SavedConversation;
+}
+
 export async function exportAccountData(
   token: string,
 ): Promise<AccountExport> {
@@ -268,6 +335,17 @@ export async function deleteAccountData(token: string): Promise<void> {
   if (!response.ok) {
     throw new Error(await getErrorMessage(response));
   }
+}
+
+// Health/admin endpoints feed the service chip and admin settings tab.
+export async function getDependencyStatus(): Promise<DependencyStatus> {
+  const response = await fetch(`${API_BASE_URL}/health/dependencies`);
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return (await response.json()) as DependencyStatus;
 }
 
 export async function getAdminDashboard(

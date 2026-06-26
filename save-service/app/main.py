@@ -9,6 +9,7 @@ from app.schemas import (
     AdminSummary,
     AuthRequest,
     AuthenticatedUser,
+    ConversationMetadataUpdate,
     DeleteConversationResponse,
     DeleteUserDataResponse,
     PasswordResetConfirmRequest,
@@ -286,6 +287,30 @@ async def get_conversation(
 ) -> SavedConversation:
     try:
         return get_store(request).get_conversation(user_id, session_id)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Saved conversation not found.",
+        ) from exc
+
+
+@app.patch(
+    "/internal/users/{user_id}/conversations/{session_id}",
+    response_model=SavedConversation,
+    tags=["internal"],
+)
+async def update_conversation_metadata(
+    user_id: UserId,
+    session_id: SessionId,
+    payload: ConversationMetadataUpdate,
+    request: Request,
+) -> SavedConversation:
+    try:
+        return get_store(request).update_conversation_metadata(
+            user_id,
+            session_id,
+            payload,
+        )
     except ConversationNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

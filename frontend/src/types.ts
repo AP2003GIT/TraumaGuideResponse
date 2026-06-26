@@ -56,6 +56,9 @@ export interface SavedConversation {
   updated_at: string;
   expires_at: string;
   retention_days: number;
+  title: string | null;
+  pinned: boolean;
+  archived: boolean;
 }
 
 export interface SavedConversationSummary {
@@ -68,6 +71,14 @@ export interface SavedConversationSummary {
   updated_at: string;
   expires_at: string;
   retention_days: number;
+  pinned: boolean;
+  archived: boolean;
+}
+
+export interface ConversationMetadataUpdate {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 export interface SavedConversationList {
@@ -87,7 +98,13 @@ export interface DependencyStatus {
   safety_service: string;
   chat_service: string;
   save_service: string;
+  mode?: ServiceMode;
+  fallback_enabled?: boolean;
+  checked_at?: string | null;
+  details?: Record<string, string | null>;
 }
+
+export type ServiceMode = "live" | "fallback" | "offline" | "checking";
 
 export interface AdminSummary {
   users: number;

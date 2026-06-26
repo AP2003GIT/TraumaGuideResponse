@@ -2,6 +2,8 @@ import type { AuthenticatedUser } from "./types";
 
 export type DisplayMode = "light" | "dark";
 
+// Browser-storage keys for preferences and auth. "Remember me" uses
+// localStorage; normal login uses sessionStorage.
 const DISPLAY_MODE_KEY = "emotional-support-display-mode";
 const AUTH_TOKEN_KEY = "emotional-support-auth-token";
 const AUTH_USER_KEY = "emotional-support-auth-user";
@@ -27,6 +29,7 @@ export function saveDisplayMode(displayMode: DisplayMode) {
   }
 }
 
+// Restores remembered auth first, then falls back to session-only auth.
 export function getSavedAuth(): {
   token: string | null;
   user: AuthenticatedUser | null;
@@ -73,6 +76,7 @@ function readStoredAuth(storage: Storage): {
   }
 }
 
+// Store auth in exactly one place so remembered/session auth cannot conflict.
 export function saveAuth(
   token: string,
   user: AuthenticatedUser,

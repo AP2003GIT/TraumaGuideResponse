@@ -53,12 +53,14 @@ by default.
 * 10-day saved-chat retention window
 * Clear-chat action that also deletes the saved conversation
 * Saved chats sidebar with search and active chat highlighting
+* Saved-chat pinning and renaming
 * Message timestamps, copy, retry, and regenerate controls
 * Account export with scope and date filters
 * Account-data deletion controls
 * Tabbed Settings panel with General, Account, Privacy, Safety, and Admin
   sections
 * Role-protected admin dashboard for service health and storage metrics
+* Service-mode diagnostics for live, fallback, and unavailable dependencies
 * Gateway rate limits for auth, chat, and admin requests
 * Light and dark display modes saved on the user's device
 * Copy confirmation feedback for message actions
@@ -98,6 +100,8 @@ The gateway is the public backend entry point. It:
 * forwards standard and elevated-risk messages to the chat service;
 * saves completed exchanges through the save service under the authenticated
   user;
+* exposes saved-chat metadata updates for rename, pin, and archive state;
+* reports dependency health, fallback mode, and service error details;
 * returns one unified response to the frontend.
 
 ### Safety Service
@@ -132,6 +136,8 @@ reset codes are stored as hashes and expire after 30 minutes. Saved chats are
 scoped to a user, older sessions are pruned after `CHAT_MAX_SAVED_CHATS`,
 which defaults to 10, and saved conversations expire after
 `CHAT_RETENTION_DAYS`, which defaults to 10.
+Saved conversations also store lightweight metadata such as custom title,
+pinned state, and archived state.
 
 ## Technology Stack
 
@@ -314,8 +320,8 @@ Gateway web service:
 * Environment variables: `AUTH_TOKEN_SECRET`, `SAFETY_SERVICE_HOST`,
   `CHAT_SERVICE_HOST`, `SAVE_SERVICE_HOST`, `SAFETY_SERVICE_PORT`,
   `CHAT_SERVICE_PORT`, `SAVE_SERVICE_PORT`, `CORS_ORIGINS`,
-  `SINGLE_SERVICE_FALLBACK=true`, `VITE_API_BASE_URL=""`, and
-  `VITE_ENABLE_DEV_LOGIN=true`
+  `SINGLE_SERVICE_FALLBACK=true`, `FALLBACK_DATA_PATH`,
+  `VITE_API_BASE_URL=""`, and `VITE_ENABLE_DEV_LOGIN=true`
 
 The Blueprint uses web services for all FastAPI apps so they can run without
 Render private-service instances. These service URLs are internet-reachable, so
@@ -323,10 +329,12 @@ do not send sensitive data to this demo deployment.
 
 The gateway also includes `SINGLE_SERVICE_FALLBACK=true` for hosted demos. When
 the safety, chat, or save services are unavailable, the gateway falls back to a
-basic in-memory implementation for sign up, login, saved chats, risk checks,
-and non-AI supportive replies. This keeps the public Render URL usable as a
-demo, but data is not durable across service restarts. Use the full
-microservice and PostgreSQL setup for real persistence.
+basic local implementation for sign up, login, saved chats, risk checks, and
+non-AI supportive replies. Set `FALLBACK_DATA_PATH` to persist this fallback
+state to a JSON file, for example `/var/data/local-demo-data.json` when using a
+Render persistent disk. Without a persistent disk, Render can still reset this
+file during rebuilds or restarts. Use the full microservice and PostgreSQL
+setup for real persistence.
  
 ## Test Each Service Independently
 

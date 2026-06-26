@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
     app_name: str = "Emotional Support Chat Service"
     gemini_api_key: str = ""
     chat_model: str = "gemini-2.5-flash"

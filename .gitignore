@@ -13,6 +13,10 @@
 **/data/
 **/*.sqlite
 **/*.sqlite3
+local-demo-data.json
+local-demo-data.tmp
+gateway-service/local-demo-data.json
+gateway-service/local-demo-data.tmp
 
 # Node
 **/node_modules/

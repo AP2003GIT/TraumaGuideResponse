@@ -9,6 +9,9 @@ export type SettingsTab =
   | "admin";
 export type ExportScope = "all" | "current";
 
+// SettingsPanel is intentionally controlled by App.tsx. The panel renders the
+// active tab, while App owns auth tokens, profile state, export filters, and
+// admin dashboard loading.
 interface SettingsPanelProps {
   activeTab: SettingsTab;
   tabs: SettingsTab[];
@@ -155,6 +158,7 @@ export function SettingsPanel({
   );
 }
 
+// General settings currently owns device-specific preferences such as theme.
 function GeneralSettings({
   displayMode,
   onDisplayModeChange,
@@ -196,6 +200,7 @@ function GeneralSettings({
   );
 }
 
+// Account settings edits the signed-in user profile and password.
 function AccountSettings({
   profileName,
   profileEmail,
@@ -296,6 +301,7 @@ function AccountSettings({
   );
 }
 
+// Privacy settings contains data export and destructive account deletion.
 function PrivacySettings({
   exportScope,
   exportFromDate,
@@ -380,6 +386,7 @@ function PrivacySettings({
   );
 }
 
+// Safety resources are static links available to all users.
 function SafetySettings() {
   return (
     <div className="setting-row safety-setting">
@@ -411,6 +418,7 @@ function SafetySettings() {
   );
 }
 
+// Admin settings are available only when App.tsx includes the admin tab.
 function AdminSettings({
   adminDashboard,
   isLoadingAdminDashboard,
@@ -441,31 +449,70 @@ function AdminSettings({
       {isLoadingAdminDashboard ? (
         <p className="settings-status">Loading dashboard...</p>
       ) : adminDashboard ? (
-        <div className="admin-dashboard-grid">
-          {Object.entries(adminDashboard.dependencies).map(
-            ([service, statusText]) => (
-              <div className="admin-metric" key={service}>
-                <span>{service.replace("_", " ")}</span>
-                <strong>{statusText}</strong>
-              </div>
-            ),
-          )}
+        <div className="admin-diagnostics">
+          <div className="admin-diagnostics-header">
+            <div>
+              <span>Mode</span>
+              <strong>
+                {adminDashboard.dependencies.mode ?? "live"}
+              </strong>
+            </div>
+            <div>
+              <span>Fallback</span>
+              <strong>
+                {adminDashboard.dependencies.fallback_enabled
+                  ? "Enabled"
+                  : "Disabled"}
+              </strong>
+            </div>
+            <div>
+              <span>Checked</span>
+              <strong>
+                {adminDashboard.dependencies.checked_at
+                  ? new Date(
+                      adminDashboard.dependencies.checked_at,
+                    ).toLocaleString()
+                  : "Not reported"}
+              </strong>
+            </div>
+          </div>
 
-          <div className="admin-metric">
-            <span>Users</span>
-            <strong>{adminDashboard.storage.users}</strong>
+          <div className="admin-service-details">
+            {[
+              ["gateway", adminDashboard.dependencies.gateway],
+              ["safety service", adminDashboard.dependencies.safety_service],
+              ["chat service", adminDashboard.dependencies.chat_service],
+              ["save service", adminDashboard.dependencies.save_service],
+            ].map(([service, statusText]) => (
+              <div className="admin-service-detail" key={service}>
+                <span>{service}</span>
+                <strong>{statusText}</strong>
+                <p>
+                  {adminDashboard.dependencies.details?.[
+                    service.replace(" ", "_")
+                  ] ?? "No issue reported."}
+                </p>
+              </div>
+            ))}
           </div>
-          <div className="admin-metric">
-            <span>Conversations</span>
-            <strong>{adminDashboard.storage.conversations}</strong>
-          </div>
-          <div className="admin-metric">
-            <span>Messages</span>
-            <strong>{adminDashboard.storage.messages}</strong>
-          </div>
-          <div className="admin-metric">
-            <span>Expiring soon</span>
-            <strong>{adminDashboard.storage.expiring_soon}</strong>
+
+          <div className="admin-dashboard-grid">
+            <div className="admin-metric">
+              <span>Users</span>
+              <strong>{adminDashboard.storage.users}</strong>
+            </div>
+            <div className="admin-metric">
+              <span>Conversations</span>
+              <strong>{adminDashboard.storage.conversations}</strong>
+            </div>
+            <div className="admin-metric">
+              <span>Messages</span>
+              <strong>{adminDashboard.storage.messages}</strong>
+            </div>
+            <div className="admin-metric">
+              <span>Expiring soon</span>
+              <strong>{adminDashboard.storage.expiring_soon}</strong>
+            </div>
           </div>
         </div>
       ) : (

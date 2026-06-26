@@ -1,4 +1,7 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+import logging
+import os
 from pathlib import Path as FilePath
 from uuid import uuid4
 
@@ -12,8 +15,9 @@ from app.auth import create_access_token, get_current_user, require_admin_user
 from app.clients import (
     DownstreamServiceError,
     delete_model,
-    get_health,
+    get_health_detail,
     get_model,
+    patch_model,
     post_model,
 )
 from app.config import get_settings
@@ -37,6 +41,7 @@ from app.schemas import (
     ChatGenerationResponse,
     ChatRequest,
     ChatResponse,
+    ConversationMetadataUpdate,
     DeleteConversationResponse,
     DeleteUserDataResponse,
     DependencyStatus,
@@ -52,11 +57,17 @@ from app.schemas import (
 )
 
 settings = get_settings()
+logger = logging.getLogger("gateway-service")
+
+# When the frontend is built into frontend/dist, the gateway can serve the
+# React app and API from the same Render service.
 FRONTEND_DIST = FilePath(__file__).resolve().parents[2] / "frontend" / "dist"
 FRONTEND_INDEX = FRONTEND_DIST / "index.html"
 FRONTEND_ASSETS = FRONTEND_DIST / "assets"
 
 
+# Converts downstream microservice failures into one consistent API shape for
+# the frontend. The request_id helps connect UI errors with service logs.
 def _service_unavailable(
     exc: DownstreamServiceError,
     request_id: str,
@@ -71,8 +82,53 @@ def _service_unavailable(
     )
 
 
+# Logs configuration that is easy to miss during local/Render deploys.
+def _log_startup_config() -> None:
+    warnings: list[str] = []
+    if settings.auth_token_secret == "replace-this-development-auth-secret":
+        warnings.append("AUTH_TOKEN_SECRET is using the development default.")
+    if settings.single_service_fallback:
+        warnings.append(
+            "Single-service fallback is enabled. "
+            f"Fallback data path: {settings.fallback_data_path}"
+        )
+    if not os.getenv("GEMINI_API_KEY"):
+        warnings.append(
+            "GEMINI_API_KEY is not set in the gateway environment. "
+            "Safety/chat services may still have their own env, but local "
+            "classification can fail if they share this config."
+        )
+
+    for warning in warnings:
+        logger.warning("startup_config_warning: %s", warning)
+
+
+# Structured warning used any time the gateway falls back or returns a
+# downstream error. This keeps service failure debugging searchable.
+def _log_downstream_failure(
+    *,
+    route: str,
+    request_id: str,
+    exc: DownstreamServiceError,
+    fallback_used: bool,
+) -> None:
+    logger.warning(
+        "downstream_failure route=%s request_id=%s service=%s "
+        "status_code=%s fallback_used=%s error=%s",
+        route,
+        request_id,
+        exc.service,
+        exc.status_code,
+        fallback_used,
+        str(exc),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # One shared HTTP client avoids reconnecting to downstream services on
+    # every request. The demo store backs single-service fallback mode.
+    _log_startup_config()
     app.state.http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(settings.request_timeout_seconds)
     )
@@ -80,6 +136,7 @@ async def lifespan(app: FastAPI):
         retention_days=settings.chat_retention_days,
         max_saved_chats=settings.chat_max_saved_chats,
         admin_emails=settings.admin_emails,
+        storage_path=settings.fallback_data_path,
     )
     yield
     await app.state.http_client.aclose()
@@ -103,6 +160,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Static assets are mounted separately so hashed Vite files load quickly while
+# API routes continue to live under /api and /health.
 if FRONTEND_ASSETS.exists():
     app.mount(
         "/assets",
@@ -121,6 +180,8 @@ def fallback_enabled() -> bool:
 
 @app.get("/", tags=["system"])
 async def root():
+    # Render should show the frontend on the root URL when dist exists. During
+    # backend-only development, return a small service status payload instead.
     if FRONTEND_INDEX.exists():
         return FileResponse(FRONTEND_INDEX)
 
@@ -144,17 +205,26 @@ async def health() -> dict[str, str]:
 async def dependency_health(request: Request) -> DependencyStatus:
     client: httpx.AsyncClient = request.app.state.http_client
 
-    safety_status = await get_health(
+    # This endpoint powers both the header service chip and admin diagnostics.
+    safety_status, safety_detail = await get_health_detail(
         client=client,
         url=f"{settings.safety_service_url}/health",
     )
-    chat_status = await get_health(
+    chat_status, chat_detail = await get_health_detail(
         client=client,
         url=f"{settings.chat_service_url}/health",
     )
-    save_status = await get_health(
+    save_status, save_detail = await get_health_detail(
         client=client,
         url=f"{settings.save_service_url}/health",
+    )
+    downstream_statuses = [safety_status, chat_status, save_status]
+    mode = (
+        "live"
+        if all(service == "healthy" for service in downstream_statuses)
+        else "fallback"
+        if fallback_enabled()
+        else "offline"
     )
 
     return DependencyStatus(
@@ -162,6 +232,14 @@ async def dependency_health(request: Request) -> DependencyStatus:
         safety_service=safety_status,
         chat_service=chat_status,
         save_service=save_status,
+        mode=mode,
+        fallback_enabled=fallback_enabled(),
+        checked_at=datetime.now(timezone.utc).isoformat(),
+        details={
+            "safety_service": safety_detail,
+            "chat_service": chat_detail,
+            "save_service": save_detail,
+        },
     )
 
 
@@ -174,6 +252,8 @@ async def register(
     payload: RegisterRequest,
     request: Request,
 ) -> AuthResponse:
+    # Auth is owned by save-service in normal mode and mirrored by LocalDemoStore
+    # when running as a single service.
     check_rate_limit(
         request,
         bucket="auth",
@@ -483,6 +563,8 @@ async def admin_dashboard(
     request: Request,
     user: AuthenticatedUser = Depends(require_admin_user),
 ) -> AdminDashboard:
+    # Admin combines live dependency status with storage metrics. The frontend
+    # hides this tab unless the authenticated user role is admin.
     check_rate_limit(
         request,
         bucket="admin",
@@ -561,6 +643,8 @@ async def save_exchange(
     model: str | None,
     request_id: str,
 ) -> bool:
+    # Chat saving is best-effort: the user can still receive a reply if the save
+    # service is down, but the response tells the frontend whether saving worked.
     if not session_id:
         return False
 
@@ -585,7 +669,13 @@ async def save_exchange(
         )
         assert isinstance(saved, SavedConversation)
         return True
-    except DownstreamServiceError:
+    except DownstreamServiceError as exc:
+        _log_downstream_failure(
+            route="save_exchange",
+            request_id=request_id,
+            exc=exc,
+            fallback_used=fallback_enabled(),
+        )
         if fallback_enabled():
             try:
                 demo_store(request).save_turn(
@@ -615,6 +705,8 @@ async def chat(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ChatResponse:
+    # Main orchestration path: safety classification first, then generation,
+    # then save the user/assistant turn.
     check_rate_limit(
         request,
         bucket="chat",
@@ -636,6 +728,8 @@ async def chat(
         assert isinstance(assessment, RiskAssessment)
 
         if assessment.risk_level in {"high", "immediate"}:
+            # High-risk content gets the safety service response directly; no
+            # general model generation is attempted.
             if not assessment.safe_reply:
                 raise DownstreamServiceError(
                     "safety-service",
@@ -704,10 +798,18 @@ async def chat(
         )
 
     except DownstreamServiceError as exc:
+        _log_downstream_failure(
+            route="chat",
+            request_id=request_id,
+            exc=exc,
+            fallback_used=fallback_enabled(),
+        )
         if not fallback_enabled():
             # Safety failure is fail-closed: no normal generation is attempted.
             raise _service_unavailable(exc, request_id) from exc
 
+        # Single-service fallback keeps the demo usable without paid/remote
+        # dependencies while preserving the same response shape.
         assessment = demo_store(request).assess_risk(payload)
         if assessment.risk_level in {"high", "immediate"}:
             reply = assessment.safe_reply or (
@@ -760,6 +862,8 @@ async def list_saved_conversations(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> SavedConversationList:
+    # Saved chats are scoped to the current authenticated user and capped by
+    # retention/max_saved_chats settings inside the storage layer.
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -836,6 +940,65 @@ async def get_saved_conversation(
         raise _service_unavailable(exc, request_id) from exc
 
 
+@app.patch(
+    "/api/conversations/{session_id}",
+    response_model=SavedConversation,
+    tags=["chat"],
+)
+async def update_saved_conversation_metadata(
+    payload: ConversationMetadataUpdate,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session_id: str = Path(min_length=1, max_length=120),
+) -> SavedConversation:
+    # Metadata edits currently cover rename, pin, and archive flags. The
+    # message history itself is not modified here.
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        conversation = await patch_model(
+            client=client,
+            service_name="save-service",
+            url=(
+                f"{settings.save_service_url}/internal/users/"
+                f"{user.user_id}/conversations/{session_id}"
+            ),
+            payload=payload,
+            response_model=SavedConversation,
+            request_id=request_id,
+        )
+        assert isinstance(conversation, SavedConversation)
+        return conversation
+    except DownstreamServiceError as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Saved conversation not found.",
+            ) from exc
+
+        _log_downstream_failure(
+            route="update_saved_conversation_metadata",
+            request_id=request_id,
+            exc=exc,
+            fallback_used=fallback_enabled(),
+        )
+        if fallback_enabled():
+            try:
+                return demo_store(request).update_conversation_metadata(
+                    user.user_id,
+                    session_id,
+                    payload,
+                )
+            except ConversationNotFoundError as fallback_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Saved conversation not found.",
+                ) from fallback_exc
+
+        raise _service_unavailable(exc, request_id) from exc
+
+
 @app.delete(
     "/api/conversations/{session_id}",
     response_model=DeleteConversationResponse,
@@ -876,4 +1039,6 @@ if FRONTEND_INDEX.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend_app(full_path: str):
+        # React owns client-side routes; unknown non-API paths should return the
+        # app shell so the browser can render the route.
         return FileResponse(FRONTEND_INDEX)

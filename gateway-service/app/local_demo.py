@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from threading import RLock
 from uuid import uuid4
 
 from app.schemas import (
@@ -14,6 +17,7 @@ from app.schemas import (
     ChatGenerationRequest,
     ChatGenerationResponse,
     ChatRequest,
+    ConversationMetadataUpdate,
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     PasswordResetRequestResponse,
@@ -29,33 +33,43 @@ from app.schemas import (
 
 
 class AccountAlreadyExistsError(ValueError):
+    """Raised when an email is already registered."""
     pass
 
 
 class InvalidCredentialsError(ValueError):
+    """Raised when login or password verification fails."""
     pass
 
 
 class InvalidResetTokenError(ValueError):
+    """Raised when a password reset token is invalid or expired."""
     pass
 
 
 class UserNotFoundError(LookupError):
+    """Raised when a requested user does not exist."""
     pass
 
 
 class ConversationNotFoundError(LookupError):
+    """Raised when a requested saved conversation does not exist."""
     pass
 
 
 class LocalDemoStore:
+    """Durable fallback store used when microservices are unavailable."""
     def __init__(
         self,
         *,
         retention_days: int,
         max_saved_chats: int,
         admin_emails: list[str],
+        storage_path: str | None = None,
     ) -> None:
+        # In fallback mode this object replaces save/safety/chat services inside
+        # one gateway process. storage_path makes it survive restarts on Render
+        # when attached to a persistent disk.
         self.retention_days = retention_days
         self.max_saved_chats = max_saved_chats
         self.admin_emails = {
@@ -65,8 +79,13 @@ class LocalDemoStore:
         self.users_by_id: dict[str, dict[str, str]] = {}
         self.reset_tokens: dict[str, dict[str, str | datetime]] = {}
         self.conversations: dict[str, SavedConversation] = {}
+        self.storage_path = Path(storage_path) if storage_path else None
+        self._lock = RLock()
+        self._load()
 
     def create_user(self, payload: RegisterRequest) -> AuthenticatedUser:
+        # The fallback store follows the same account rules as save-service so
+        # frontend auth behavior does not change between modes.
         email = payload.email.strip().lower()
         if email in self.users_by_email:
             raise AccountAlreadyExistsError(email)
@@ -80,6 +99,7 @@ class LocalDemoStore:
         }
         self.users_by_email[email] = user
         self.users_by_id[user["user_id"]] = user
+        self._persist()
         return self._user_from_record(user)
 
     def authenticate_user(self, payload: AuthRequest) -> AuthenticatedUser:
@@ -103,6 +123,7 @@ class LocalDemoStore:
         user_id: str,
         payload: ProfileUpdateRequest,
     ) -> AuthenticatedUser:
+        # Keep both lookup maps in sync when the user changes email.
         user = self.users_by_id.get(user_id)
         if user is None:
             raise UserNotFoundError(user_id)
@@ -127,12 +148,15 @@ class LocalDemoStore:
         user["email"] = email
         user["display_name"] = payload.display_name.strip()
         user["role"] = self._role_for_email(email, user["role"])
+        self._persist()
         return self._user_from_record(user)
 
     def request_password_reset(
         self,
         payload: PasswordResetRequest,
     ) -> PasswordResetRequestResponse:
+        # Demo reset tokens are returned directly for local testing. A real
+        # production service would email this token instead.
         user = self.users_by_email.get(payload.email.strip().lower())
         if user is None:
             return PasswordResetRequestResponse(
@@ -145,6 +169,7 @@ class LocalDemoStore:
             "user_id": user["user_id"],
             "expires_at": self._now() + timedelta(minutes=30),
         }
+        self._persist()
         return PasswordResetRequestResponse(
             accepted=True,
             dev_reset_token=token,
@@ -168,6 +193,7 @@ class LocalDemoStore:
 
         user["password_hash"] = self._hash_password(payload.new_password)
         self.reset_tokens.pop(payload.reset_token, None)
+        self._persist()
         return self._user_from_record(user)
 
     def save_turn(
@@ -176,6 +202,8 @@ class LocalDemoStore:
         session_id: str,
         payload: SaveTurnRequest,
     ) -> SavedConversation:
+        # A saved turn is always stored as two messages so the frontend can
+        # rebuild the original chat transcript.
         self.get_user(user_id)
         now = self._iso_now()
         key = self._conversation_key(user_id, session_id)
@@ -217,10 +245,13 @@ class LocalDemoStore:
         conversation.expires_at = self._expires_at()
         self.conversations[key] = conversation
         self._prune_oldest(user_id)
+        self._persist()
         return conversation
 
     def list_conversations(self, user_id: str) -> SavedConversationList:
+        # Summaries match the save-service response shape used by the sidebar.
         self.get_user(user_id)
+        self._cleanup_expired()
         conversations = sorted(
             [
                 conversation
@@ -243,6 +274,8 @@ class LocalDemoStore:
                     updated_at=conversation.updated_at,
                     expires_at=conversation.expires_at,
                     retention_days=self.retention_days,
+                    pinned=conversation.pinned,
+                    archived=conversation.archived,
                 )
                 for conversation in conversations
             ],
@@ -255,6 +288,7 @@ class LocalDemoStore:
         user_id: str,
         session_id: str,
     ) -> SavedConversation:
+        self._cleanup_expired()
         conversation = self.conversations.get(
             self._conversation_key(user_id, session_id)
         )
@@ -262,16 +296,42 @@ class LocalDemoStore:
             raise ConversationNotFoundError(session_id)
         return conversation
 
+    def update_conversation_metadata(
+        self,
+        user_id: str,
+        session_id: str,
+        payload: ConversationMetadataUpdate,
+    ) -> SavedConversation:
+        # Rename, pin, and archive are metadata-only changes; message contents
+        # stay untouched.
+        conversation = self.get_conversation(user_id, session_id)
+        if payload.title is not None:
+            conversation.title = payload.title
+        if payload.pinned is not None:
+            conversation.pinned = payload.pinned
+        if payload.archived is not None:
+            conversation.archived = payload.archived
+        conversation.updated_at = self._iso_now()
+        self.conversations[
+            self._conversation_key(user_id, session_id)
+        ] = conversation
+        self._persist()
+        return conversation
+
     def delete_conversation(self, user_id: str, session_id: str) -> bool:
-        return (
+        deleted = (
             self.conversations.pop(
                 self._conversation_key(user_id, session_id),
                 None,
             )
             is not None
         )
+        if deleted:
+            self._persist()
+        return deleted
 
     def export_user_data(self, user_id: str) -> AccountExport:
+        self._cleanup_expired()
         return AccountExport(
             user=self.get_user(user_id),
             conversations=[
@@ -293,9 +353,11 @@ class LocalDemoStore:
         for key in conversation_keys:
             self.conversations.pop(key, None)
 
+        self._persist()
         return deleted_user is not None, len(conversation_keys)
 
     def admin_summary(self) -> AdminSummary:
+        self._cleanup_expired()
         return AdminSummary(
             users=len(self.users_by_id),
             conversations=len(self.conversations),
@@ -310,6 +372,8 @@ class LocalDemoStore:
         )
 
     def assess_risk(self, payload: ChatRequest) -> RiskAssessment:
+        # Lightweight keyword fallback used only when the real safety service is
+        # unreachable and single-service fallback is enabled.
         message = payload.message.lower()
         immediate_terms = [
             "kill myself",
@@ -350,6 +414,8 @@ class LocalDemoStore:
         self,
         payload: ChatGenerationRequest,
     ) -> ChatGenerationResponse:
+        # Deterministic fallback response so the app remains usable without the
+        # chat model service or external model credentials.
         if payload.needs_professional_support:
             reply = (
                 "That sounds like a lot to carry. Try one small step first: "
@@ -390,6 +456,7 @@ class LocalDemoStore:
         return f"{user_id}:{session_id}"
 
     def _prune_oldest(self, user_id: str) -> None:
+        # Keep the newest max_saved_chats conversations per user.
         conversations = sorted(
             [
                 conversation
@@ -406,10 +473,106 @@ class LocalDemoStore:
             )
 
     def _title_for(self, conversation: SavedConversation) -> str:
+        if conversation.title:
+            return conversation.title
         for message in conversation.messages:
             if message.role == "user":
                 return message.content[:120] or "Untitled chat"
         return "Untitled chat"
+
+    def _cleanup_expired(self) -> None:
+        # Retention cleanup happens during normal reads/writes instead of a
+        # background job, which keeps the fallback store simple.
+        now = self._now()
+        expired_keys = [
+            key
+            for key, conversation in self.conversations.items()
+            if datetime.fromisoformat(conversation.expires_at) <= now
+        ]
+        for key in expired_keys:
+            self.conversations.pop(key, None)
+        if expired_keys:
+            self._persist()
+
+    def _load(self) -> None:
+        # Best-effort JSON restore. Invalid records are skipped so one bad entry
+        # does not prevent the demo service from starting.
+        if self.storage_path is None or not self.storage_path.exists():
+            return
+
+        try:
+            data = json.loads(self.storage_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        users = data.get("users", [])
+        if isinstance(users, list):
+            for user in users:
+                if not isinstance(user, dict) or "email" not in user:
+                    continue
+                record = {key: str(value) for key, value in user.items()}
+                self.users_by_email[record["email"]] = record
+                self.users_by_id[record["user_id"]] = record
+
+        reset_tokens = data.get("reset_tokens", {})
+        if isinstance(reset_tokens, dict):
+            for token, reset in reset_tokens.items():
+                if not isinstance(reset, dict):
+                    continue
+                expires_at = reset.get("expires_at")
+                user_id = reset.get("user_id")
+                if not isinstance(expires_at, str) or not isinstance(
+                    user_id,
+                    str,
+                ):
+                    continue
+                self.reset_tokens[token] = {
+                    "user_id": user_id,
+                    "expires_at": datetime.fromisoformat(expires_at),
+                }
+
+        conversations = data.get("conversations", {})
+        if isinstance(conversations, dict):
+            for key, conversation in conversations.items():
+                try:
+                    self.conversations[key] = (
+                        SavedConversation.model_validate(conversation)
+                    )
+                except ValueError:
+                    continue
+
+    def _persist(self) -> None:
+        # Write through a temporary file and replace it atomically to reduce the
+        # chance of corrupting fallback data during restarts.
+        if self.storage_path is None:
+            return
+
+        with self._lock:
+            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "users": list(self.users_by_id.values()),
+                "reset_tokens": {
+                    token: {
+                        "user_id": reset["user_id"],
+                        "expires_at": (
+                            reset["expires_at"].isoformat()
+                            if isinstance(reset["expires_at"], datetime)
+                            else reset["expires_at"]
+                        ),
+                    }
+                    for token, reset in self.reset_tokens.items()
+                },
+                "conversations": {
+                    key: conversation.model_dump(mode="json")
+                    for key, conversation in self.conversations.items()
+                },
+            }
+            temporary_path = self.storage_path.with_suffix(".tmp")
+            temporary_path.write_text(
+                json.dumps(payload, indent=2),
+                encoding="utf-8",
+            )
+            temporary_path.replace(self.storage_path)
 
     def _preview_for(self, conversation: SavedConversation) -> str:
         if not conversation.messages:

@@ -1,4 +1,5 @@
 :root {
+  /* Light theme design tokens used by every component. */
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
@@ -34,6 +35,7 @@
 }
 
 [data-theme="dark"] {
+  /* Dark theme overrides keep component styles identical across modes. */
   --page: #111816;
   --surface: #17211e;
   --surface-subtle: #1d2a26;
@@ -97,6 +99,7 @@ textarea:focus-visible {
 }
 
 .app-shell {
+  /* Outer page frame for both auth and chat screens. */
   min-height: 100vh;
   padding: 32px 16px;
   display: grid;
@@ -128,6 +131,7 @@ textarea:focus-visible {
 }
 
 .auth-card {
+  /* Login/sign-up/reset card. */
   width: min(460px, 100%);
   padding: 30px;
   background: var(--surface);
@@ -294,6 +298,7 @@ textarea:focus-visible {
 }
 
 .app-header {
+  /* Main chat header: title, account label, service status, and actions. */
   padding: 28px 30px 20px;
   display: flex;
   justify-content: space-between;
@@ -314,6 +319,7 @@ textarea:focus-visible {
 }
 
 .saved-sidebar {
+  /* Desktop saved-chat navigation. Hidden on small screens. */
   min-height: 100%;
   padding: 18px;
   background: var(--surface);
@@ -368,6 +374,30 @@ textarea:focus-visible {
 
 .panel-search {
   margin-bottom: 4px;
+}
+
+.saved-chat-filters {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.saved-chat-filters button {
+  min-height: 32px;
+  padding: 6px 7px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.saved-chat-filters button.active {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .sidebar-list {
@@ -432,6 +462,50 @@ h1 {
   color: var(--text-muted);
 }
 
+.service-mode {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 12px;
+  padding: 7px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.78rem;
+}
+
+.service-mode span {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--text-muted);
+}
+
+.service-mode strong {
+  color: var(--text);
+}
+
+.service-mode small {
+  color: var(--text-soft);
+}
+
+.service-mode-live span {
+  background: #168756;
+}
+
+.service-mode-fallback span {
+  background: #bf7b16;
+}
+
+.service-mode-offline span {
+  background: #b34239;
+}
+
 .role-chip {
   display: inline-flex;
   align-items: center;
@@ -448,6 +522,7 @@ h1 {
 }
 
 .settings-panel {
+  /* In-page settings drawer shared by all settings tabs. */
   margin: 18px 30px 0;
   padding: 18px;
   border: 1px solid var(--border);
@@ -456,6 +531,7 @@ h1 {
 }
 
 .saved-chats-panel {
+  /* Mobile/in-page saved-chat drawer. */
   margin: 18px 30px 0;
   padding: 18px;
   border: 1px solid var(--border);
@@ -529,12 +605,32 @@ h1 {
   display: block;
 }
 
+.saved-chat-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .saved-chat-title {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   color: var(--text);
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.saved-chat-pin-label {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: var(--accent);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 850;
 }
 
 .saved-chat-preview {
@@ -559,6 +655,75 @@ h1 {
   border: 1px solid var(--error-border);
   border-radius: 9px;
   font-weight: 750;
+}
+
+.saved-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.saved-chat-pin {
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-weight: 750;
+}
+
+.saved-chat-rename {
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-weight: 750;
+}
+
+.saved-chat-rename-form {
+  display: grid;
+  gap: 8px;
+}
+
+.saved-chat-rename-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.saved-chat-rename-form input {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  outline: none;
+}
+
+.saved-chat-rename-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.saved-chat-rename-form div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.saved-chat-pin[aria-pressed="true"] {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .saved-chats-empty {
@@ -723,6 +888,68 @@ h1 {
   gap: 10px;
 }
 
+.admin-diagnostics {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-diagnostics-header {
+  padding: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.admin-diagnostics-header span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.admin-diagnostics-header strong {
+  display: block;
+  margin-top: 4px;
+}
+
+.admin-service-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.admin-service-detail {
+  min-height: 92px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.admin-service-detail span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.admin-service-detail strong {
+  display: block;
+  margin-top: 6px;
+}
+
+.admin-service-detail p {
+  margin-top: 7px;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+}
+
 .admin-metric {
   min-height: 76px;
   padding: 12px;
@@ -798,7 +1025,67 @@ h1 {
   line-height: 1.5;
 }
 
+.conversation-strip {
+  /* Current-chat stats: messages, saved capacity, retention, and draft state. */
+  margin: 14px 30px 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.conversation-strip div {
+  min-height: 82px;
+  padding: 12px;
+  display: grid;
+  align-content: space-between;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.conversation-strip span {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.conversation-strip strong {
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 1.15rem;
+}
+
+.conversation-strip small {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.support-tools {
+  /* Quick actions that fill the composer with useful support prompts. */
+  margin: 14px 30px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.support-tools button {
+  min-height: 36px;
+  padding: 8px 11px;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-weight: 800;
+}
+
+.support-tools button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--accent-hover);
+}
+
 .messages {
+  /* Scrollable transcript area. */
   flex: 1;
   padding: 26px 30px;
   overflow-y: auto;
@@ -821,6 +1108,33 @@ h1 {
 
 .empty-state > p {
   color: var(--text-soft);
+}
+
+.prompt-tabs {
+  width: fit-content;
+  max-width: 100%;
+  margin: 20px auto 0;
+  padding: 4px;
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(96px, 1fr));
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.prompt-tabs button {
+  min-height: 34px;
+  padding: 7px 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-weight: 800;
+}
+
+.prompt-tabs button.active {
+  color: var(--accent-contrast);
+  background: var(--accent);
 }
 
 .prompt-grid {
@@ -1008,6 +1322,7 @@ h1 {
 }
 
 .composer {
+  /* Sticky-feeling message entry area at the bottom of the chat card. */
   padding: 20px 30px 28px;
   border-top: 1px solid var(--border-soft);
 }
@@ -1083,6 +1398,7 @@ h1 {
 }
 
 @media (max-width: 700px) {
+  /* Single-column mobile layout: hide desktop sidebar and stack dense controls. */
   .app-shell {
     padding: 0;
   }
@@ -1142,6 +1458,10 @@ h1 {
     justify-self: flex-start;
   }
 
+  .saved-chat-actions {
+    justify-content: flex-start;
+  }
+
   .settings-header,
   .setting-row {
     align-items: stretch;
@@ -1154,7 +1474,8 @@ h1 {
   }
 
   .settings-form-grid,
-  .admin-dashboard-grid {
+  .admin-dashboard-grid,
+  .admin-service-details {
     grid-template-columns: 1fr;
   }
 
@@ -1166,8 +1487,19 @@ h1 {
     width: 100%;
   }
 
-  .notice {
+  .notice,
+  .conversation-strip,
+  .support-tools {
     margin: 14px 18px 0;
+  }
+
+  .conversation-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .support-tools {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .crisis-panel {
@@ -1189,6 +1521,11 @@ h1 {
   }
 
   .prompt-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-tabs {
+    width: 100%;
     grid-template-columns: 1fr;
   }
 

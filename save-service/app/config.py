@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
     app_name: str = "Emotional Support Save Service"
     database_url: str = (
         "postgresql://support_app:support_app_dev_password"

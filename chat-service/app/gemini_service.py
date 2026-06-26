@@ -34,6 +34,7 @@ def build_contents(
 
 
 class GeminiChatService:
+    """Client wrapper for Gemini chat generation requests."""
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = (

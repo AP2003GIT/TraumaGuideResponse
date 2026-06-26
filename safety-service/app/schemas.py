@@ -7,11 +7,13 @@ RiskLevel = Literal["standard", "elevated", "high", "immediate"]
 
 
 class ChatMessage(BaseModel):
+    """Single chat message exchanged between services."""
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=4000)
 
 
 class RiskRequest(BaseModel):
+    """Safety-service request payload for risk classification."""
     message: str = Field(min_length=1, max_length=4000)
     history: list[ChatMessage] = Field(default_factory=list, max_length=20)
 
@@ -25,6 +27,7 @@ class RiskRequest(BaseModel):
 
 
 class ModelRiskAssessment(BaseModel):
+    """Structured risk assessment returned by the model."""
     risk_level: RiskLevel
     mentions_self_harm: bool
     mentions_harm_to_others: bool
@@ -33,4 +36,5 @@ class ModelRiskAssessment(BaseModel):
 
 
 class RiskAssessment(ModelRiskAssessment):
+    """Normalized safety assessment used by the platform."""
     safe_reply: str | None

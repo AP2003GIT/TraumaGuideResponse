@@ -14,6 +14,7 @@ from app.schemas import (
     AdminSummary,
     AuthRequest,
     AuthenticatedUser,
+    ConversationMetadataUpdate,
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     PasswordResetRequestResponse,
@@ -29,26 +30,32 @@ from app.migrations import run_migrations
 
 
 class AccountAlreadyExistsError(ValueError):
+    """Raised when an email is already registered."""
     pass
 
 
 class InvalidCredentialsError(ValueError):
+    """Raised when login or password verification fails."""
     pass
 
 
 class InvalidResetTokenError(ValueError):
+    """Raised when a password reset token is invalid or expired."""
     pass
 
 
 class UserNotFoundError(LookupError):
+    """Raised when a requested user does not exist."""
     pass
 
 
 class ConversationNotFoundError(LookupError):
+    """Raised when a requested saved conversation does not exist."""
     pass
 
 
 class ChatStore:
+    """PostgreSQL-backed account and conversation storage."""
     def __init__(
         self,
         database_url: str,
@@ -66,6 +73,8 @@ class ChatStore:
         }
 
     def initialize(self) -> None:
+        # Called on service startup to make sure schema migrations and cleanup
+        # have run before the gateway sends user traffic here.
         with self._connect() as connection:
             run_migrations(connection)
             self._cleanup_expired(connection, self._now())
@@ -76,6 +85,7 @@ class ChatStore:
             connection.execute("SELECT 1")
 
     def _role_for_email(self, email: str, stored_role: str = "user") -> str:
+        # Admin status can come from configuration or a stored database role.
         if email.strip().lower() in self.admin_emails:
             return "admin"
         if stored_role == "admin":
@@ -94,6 +104,7 @@ class ChatStore:
         )
 
     def create_user(self, payload: RegisterRequest) -> AuthenticatedUser:
+        # Store only password hashes, never plaintext passwords.
         now = self._now()
         user = AuthenticatedUser(
             user_id=str(uuid4()),
@@ -170,6 +181,8 @@ class ChatStore:
         user_id: str,
         payload: ProfileUpdateRequest,
     ) -> AuthenticatedUser:
+        # Password changes require the current password; display name/email
+        # edits can happen without changing the password hash.
         with self._connect() as connection:
             user = connection.execute(
                 """
@@ -225,6 +238,7 @@ class ChatStore:
         self,
         payload: PasswordResetRequest,
     ) -> PasswordResetRequestResponse:
+        # The API always returns accepted=True so account existence is not leaked.
         now = self._now()
         token = secrets.token_urlsafe(32)
 
@@ -326,6 +340,8 @@ class ChatStore:
         *,
         now: datetime | None = None,
     ) -> SavedConversation:
+        # Each chat request writes two message rows: the user's message and the
+        # assistant reply. Duplicate request ids are ignored for idempotency.
         saved_at = now or self._now()
         expires_at = saved_at + timedelta(days=self.retention_days)
 
@@ -346,6 +362,8 @@ class ChatStore:
                 and conversation["user_id"] is not None
                 and conversation["user_id"] != user_id
             ):
+                # Session ids should not let one user read or overwrite another
+                # user's conversation.
                 raise ConversationNotFoundError(session_id)
 
             created_at = (
@@ -439,7 +457,10 @@ class ChatStore:
                     user_id,
                     created_at,
                     updated_at,
-                    expires_at
+                    expires_at,
+                    title_override,
+                    pinned,
+                    archived_at
                 FROM conversations
                 WHERE session_id = %s AND user_id = %s
                 """,
@@ -474,6 +495,8 @@ class ChatStore:
         *,
         now: datetime | None = None,
     ) -> SavedConversationList:
+        # Conversation summaries are optimized for the sidebar: title, preview,
+        # message count, retention, and metadata without loading full messages.
         checked_at = now or self._now()
 
         with self._connect() as connection:
@@ -488,8 +511,11 @@ class ChatStore:
                     c.created_at,
                     c.updated_at,
                     c.expires_at,
+                    c.pinned,
+                    c.archived_at,
                     COUNT(m.id)::INTEGER AS message_count,
                     COALESCE(
+                        c.title_override,
                         (
                             SELECT LEFT(user_message.content, 120)
                             FROM messages AS user_message
@@ -526,7 +552,10 @@ class ChatStore:
                     c.session_id,
                     c.created_at,
                     c.updated_at,
-                    c.expires_at
+                    c.expires_at,
+                    c.title_override,
+                    c.pinned,
+                    c.archived_at
                 ORDER BY c.updated_at DESC, c.session_id DESC
                 LIMIT %s
                 """,
@@ -553,6 +582,8 @@ class ChatStore:
                         conversation["expires_at"]
                     ),
                     retention_days=self.retention_days,
+                    pinned=conversation["pinned"],
+                    archived=conversation["archived_at"] is not None,
                 )
                 for conversation in conversations
             ],
@@ -599,7 +630,60 @@ class ChatStore:
 
         return result.rowcount > 0
 
+    def update_conversation_metadata(
+        self,
+        user_id: str,
+        session_id: str,
+        payload: ConversationMetadataUpdate,
+    ) -> SavedConversation:
+        # Rename/pin/archive updates touch only conversation metadata and bump
+        # updated_at so the sidebar ordering reflects recent edits.
+        now = self._now()
+
+        with self._connect() as connection:
+            self._cleanup_expired(connection, now)
+            conversation = connection.execute(
+                """
+                SELECT session_id
+                FROM conversations
+                WHERE session_id = %s AND user_id = %s
+                """,
+                (session_id, user_id),
+            ).fetchone()
+            if conversation is None:
+                raise ConversationNotFoundError(session_id)
+
+            connection.execute(
+                """
+                UPDATE conversations
+                SET
+                    title_override = COALESCE(%s, title_override),
+                    pinned = COALESCE(%s, pinned),
+                    archived_at = CASE
+                        WHEN %s IS NULL THEN archived_at
+                        WHEN %s THEN %s
+                        ELSE NULL
+                    END,
+                    updated_at = %s
+                WHERE session_id = %s AND user_id = %s
+                """,
+                (
+                    payload.title,
+                    payload.pinned,
+                    payload.archived,
+                    payload.archived,
+                    now,
+                    now,
+                    session_id,
+                    user_id,
+                ),
+            )
+
+        return self.get_conversation(user_id, session_id, now=now)
+
     def delete_user_data(self, user_id: str) -> tuple[bool, int]:
+        # Deleting the user cascades through conversations/messages because the
+        # database schema owns those relationships.
         with self._connect() as connection:
             deleted_conversations = connection.execute(
                 "DELETE FROM conversations WHERE user_id = %s",
@@ -613,6 +697,8 @@ class ChatStore:
         return deleted_user > 0, deleted_conversations
 
     def admin_summary(self) -> AdminSummary:
+        # Admin metrics are deliberately small and aggregate-only; no message
+        # content is exposed in this endpoint.
         now = self._now()
 
         with self._connect() as connection:
@@ -667,6 +753,8 @@ class ChatStore:
         connection: psycopg.Connection,
         now: datetime,
     ) -> None:
+        # Retention is enforced on read/write paths so old chats disappear even
+        # without a background scheduler.
         connection.execute(
             "DELETE FROM conversations WHERE expires_at <= %s",
             (now,),
@@ -690,6 +778,7 @@ class ChatStore:
         connection: psycopg.Connection,
         user_id: str,
     ) -> None:
+        # Keep only the newest N conversations per user after saving/listing.
         connection.execute(
             """
             DELETE FROM conversations
@@ -709,6 +798,7 @@ class ChatStore:
         conversation: dict,
         messages: list[dict],
     ) -> SavedConversation:
+        # Convert database rows into the API schema used by gateway/frontend.
         return SavedConversation(
             user_id=conversation["user_id"],
             session_id=conversation["session_id"],
@@ -728,6 +818,9 @@ class ChatStore:
             updated_at=self._ensure_utc(conversation["updated_at"]),
             expires_at=self._ensure_utc(conversation["expires_at"]),
             retention_days=self.retention_days,
+            title=conversation["title_override"],
+            pinned=conversation["pinned"],
+            archived=conversation["archived_at"] is not None,
         )
 
     @staticmethod

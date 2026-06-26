@@ -57,6 +57,7 @@ def build_classifier_input(request: RiskRequest) -> str:
 
 
 class RiskClassifier:
+    """Classifies incoming messages into safety risk levels."""
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = (

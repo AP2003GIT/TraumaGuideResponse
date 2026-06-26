@@ -6,6 +6,7 @@ import pytest
 
 from app.schemas import (
     AuthRequest,
+    ConversationMetadataUpdate,
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     ProfileUpdateRequest,
@@ -75,6 +76,37 @@ def test_save_and_load_conversation() -> None:
     ]
     assert saved.messages[1].risk_level == "standard"
     assert saved.messages[1].model == "demo-model"
+
+
+def test_conversation_metadata_can_be_updated() -> None:
+    store = create_store()
+    store.initialize()
+    user_id = create_user(store)
+    session_id = f"test-{uuid4()}"
+
+    store.save_turn(
+        user_id,
+        session_id,
+        SaveTurnRequest(
+            user_message="Hello.",
+            assistant_message="Hello back.",
+            risk_level="standard",
+            model=None,
+            request_id="request-1",
+        ),
+    )
+
+    updated = store.update_conversation_metadata(
+        user_id,
+        session_id,
+        ConversationMetadataUpdate(title="Renamed chat", pinned=True),
+    )
+    listed = store.list_conversations(user_id)
+
+    assert updated.title == "Renamed chat"
+    assert updated.pinned is True
+    assert listed.conversations[0].title == "Renamed chat"
+    assert listed.conversations[0].pinned is True
 
 
 def test_expired_conversation_is_removed() -> None:

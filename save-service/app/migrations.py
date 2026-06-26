@@ -111,6 +111,27 @@ MIGRATIONS: Sequence[Migration] = (
             """,
         ),
     ),
+    (
+        "003_conversation_metadata",
+        (
+            """
+            ALTER TABLE conversations
+            ADD COLUMN IF NOT EXISTS title_override TEXT
+            """,
+            """
+            ALTER TABLE conversations
+            ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE
+            """,
+            """
+            ALTER TABLE conversations
+            ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_conversations_user_pinned
+                ON conversations(user_id, pinned, updated_at DESC)
+            """,
+        ),
+    ),
 )
 
 

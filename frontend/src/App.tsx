@@ -14,6 +14,7 @@ import {
   exportAccountData,
   getAdminDashboard,
   getCurrentUser,
+  getDependencyStatus,
   getSavedConversation,
   getSavedConversations,
   continueAsDeveloper,
@@ -22,12 +23,15 @@ import {
   requestPasswordReset,
   sendChatMessage,
   updateAccountProfile,
+  updateSavedConversationMetadata,
 } from "./api";
 import type {
   AdminDashboard,
   AuthenticatedUser,
   ChatMessage,
+  DependencyStatus,
   SavedConversationSummary,
+  ServiceMode,
 } from "./types";
 import {
   clearAuth,
@@ -58,14 +62,155 @@ import {
   type SettingsTab,
 } from "./components/SettingsPanel";
 
+// Prompt groups shown in the empty chat state. Clicking one fills the draft
+// instead of sending immediately so the user can personalize it first.
 const starterPrompts = [
-  "I feel overwhelmed and need a grounding exercise.",
-  "Help me understand why stress affects my sleep.",
-  "How can I communicate a boundary calmly?",
+  {
+    category: "Grounding",
+    prompts: [
+      "I feel overwhelmed and need a grounding exercise.",
+      "Walk me through a quick body scan.",
+      "Help me calm down before I reply to someone.",
+    ],
+  },
+  {
+    category: "Reflection",
+    prompts: [
+      "Help me name what I am feeling right now.",
+      "Help me understand why stress affects my sleep.",
+      "What questions can I ask myself when I feel stuck?",
+    ],
+  },
+  {
+    category: "Communication",
+    prompts: [
+      "How can I communicate a boundary calmly?",
+      "Help me write a short message asking for space.",
+      "Help me prepare for a difficult conversation.",
+    ],
+  },
 ];
+
+const PINNED_CHAT_IDS_KEY = "trauma-guide-pinned-chat-ids";
+const CHAT_DRAFTS_KEY = "trauma-guide-chat-drafts";
+
+type SavedChatFilter = "all" | "pinned" | "expiring";
+
+// Saved-chat pins are mirrored in local storage so the sidebar feels stable
+// immediately, then refreshed from the backend when saved chats reload.
+function getPinnedSavedChatIds(): string[] {
+  try {
+    const rawValue = window.localStorage.getItem(PINNED_CHAT_IDS_KEY);
+    const parsedValue = rawValue ? JSON.parse(rawValue) : [];
+    return Array.isArray(parsedValue)
+      ? parsedValue.filter((value) => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePinnedSavedChatIds(sessionIds: string[]) {
+  window.localStorage.setItem(
+    PINNED_CHAT_IDS_KEY,
+    JSON.stringify(sessionIds),
+  );
+}
+
+// Drafts are stored by session id, which lets the user switch chats without
+// losing unsent text in the composer.
+function getSavedDrafts(): Record<string, string> {
+  try {
+    const rawValue = window.localStorage.getItem(CHAT_DRAFTS_KEY);
+    const parsedValue = rawValue ? JSON.parse(rawValue) : {};
+
+    if (!parsedValue || typeof parsedValue !== "object") {
+      return {};
+    }
+
+    return Object.entries(parsedValue).reduce<Record<string, string>>(
+      (drafts, [sessionId, value]) => {
+        if (typeof value === "string") {
+          drafts[sessionId] = value;
+        }
+
+        return drafts;
+      },
+      {},
+    );
+  } catch {
+    return {};
+  }
+}
+
+function saveDrafts(drafts: Record<string, string>) {
+  window.localStorage.setItem(CHAT_DRAFTS_KEY, JSON.stringify(drafts));
+}
+
+function getDaysUntilExpiration(chat: SavedConversationSummary): number {
+  const expiresAt = new Date(chat.expires_at).getTime();
+  return Math.ceil((expiresAt - Date.now()) / 86400000);
+}
+
+function getServiceMode(
+  dependencies: DependencyStatus | null,
+): ServiceMode {
+  if (!dependencies) {
+    return "checking";
+  }
+
+  if (dependencies.mode) {
+    return dependencies.mode;
+  }
+
+  if (dependencies.gateway !== "healthy") {
+    return "offline";
+  }
+
+  const downstreamStatuses = [
+    dependencies.safety_service,
+    dependencies.chat_service,
+    dependencies.save_service,
+  ];
+
+  return downstreamStatuses.every((service) => service === "healthy")
+    ? "live"
+    : "fallback";
+}
+
+// These small helpers keep service health wording consistent between the
+// header chip and the admin diagnostics panel.
+function getServiceModeLabel(mode: ServiceMode): string {
+  switch (mode) {
+    case "live":
+      return "Live services";
+    case "fallback":
+      return "Fallback mode";
+    case "offline":
+      return "Offline";
+    default:
+      return "Checking services";
+  }
+}
+
+function getServiceModeDetail(mode: ServiceMode): string {
+  switch (mode) {
+    case "live":
+      return "Safety, chat, and saving services are healthy.";
+    case "fallback":
+      return "A dependency is unavailable, so the demo fallback is active.";
+    case "offline":
+      return "The gateway health check is not reachable.";
+    default:
+      return "Checking gateway and dependency health.";
+  }
+}
 
 export default function App() {
   const savedAuth = getSavedAuth();
+
+  // Core session and authentication state. Remembered auth is restored from
+  // browser storage before the first render.
   const [sessionId, setSessionId] = useState(getSavedSessionId);
   const [displayMode, setDisplayMode] =
     useState<DisplayMode>(getSavedDisplayMode);
@@ -79,8 +224,17 @@ export default function App() {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavedChatsOpen, setIsSavedChatsOpen] = useState(false);
+
+  // UI state for panels, saved-chat filters, and account settings forms.
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [savedChatSearch, setSavedChatSearch] = useState("");
+  const [savedChatFilter, setSavedChatFilter] =
+    useState<SavedChatFilter>("all");
+  const [activePromptCategory, setActivePromptCategory] =
+    useState(starterPrompts[0].category);
+  const [pinnedSavedChatIds, setPinnedSavedChatIds] = useState(
+    getPinnedSavedChatIds,
+  );
   const [profileName, setProfileName] = useState(
     savedAuth.user?.display_name ?? "",
   );
@@ -97,6 +251,9 @@ export default function App() {
     useState<AdminDashboard | null>(null);
   const [isLoadingAdminDashboard, setIsLoadingAdminDashboard] =
     useState(false);
+
+  // Conversation state. The message list is the visible chat transcript;
+  // saved chat summaries power the sidebar and mobile saved-chat panel.
   const [savedChats, setSavedChats] = useState<
     SavedConversationSummary[]
   >([]);
@@ -104,12 +261,18 @@ export default function App() {
   const [isLoadingSavedChats, setIsLoadingSavedChats] =
     useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [draft, setDraft] = useState("");
+  const [draftsBySession, setDraftsBySession] = useState(getSavedDrafts);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [dependencyStatus, setDependencyStatus] =
+    useState<DependencyStatus | null>(null);
+  const [serviceMode, setServiceMode] =
+    useState<ServiceMode>("checking");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // The backend wants compact role/content history, not the extra display
+  // fields we keep for timestamps, status labels, and risk badges.
   const history = useMemo<ChatMessage[]>(
     () =>
       messages.map(({ role, content }) => ({
@@ -132,29 +295,110 @@ export default function App() {
         : ["general", "account", "privacy", "safety"],
     [currentUser?.role],
   );
+  const pinnedSavedChatIdSet = useMemo(
+    () => new Set(pinnedSavedChatIds),
+    [pinnedSavedChatIds],
+  );
+  const draft = draftsBySession[sessionId] ?? "";
+  const activePromptGroup =
+    starterPrompts.find(
+      (promptGroup) => promptGroup.category === activePromptCategory,
+    ) ?? starterPrompts[0];
+  const activeSavedChat = savedChats.find(
+    (chat) => chat.session_id === sessionId,
+  );
+  const userMessageCount = messages.filter(
+    (message) => message.role === "user",
+  ).length;
+  const assistantMessageCount = messages.filter(
+    (message) => message.role === "assistant",
+  ).length;
 
+  // Saved chats are filtered client-side so search/filter clicks do not need
+  // a network round trip.
   const filteredSavedChats = useMemo(
-    () =>
-      savedChats.filter((chat) => {
+    () => {
+      const filteredChats = savedChats.filter((chat) => {
         const query = savedChatSearch.trim().toLowerCase();
-        if (!query) {
-          return true;
+        const isPinned = pinnedSavedChatIdSet.has(chat.session_id);
+        const isExpiringSoon = getDaysUntilExpiration(chat) <= 3;
+
+        if (savedChatFilter === "pinned" && !isPinned) {
+          return false;
+        }
+
+        if (savedChatFilter === "expiring" && !isExpiringSoon) {
+          return false;
+        }
+
+        if (query) {
+          return (
+            chat.title.toLowerCase().includes(query) ||
+            chat.last_message_preview.toLowerCase().includes(query)
+          );
+        }
+
+        return true;
+      });
+
+      return filteredChats.sort((left, right) => {
+        const leftPinned = pinnedSavedChatIdSet.has(left.session_id);
+        const rightPinned = pinnedSavedChatIdSet.has(right.session_id);
+
+        if (leftPinned !== rightPinned) {
+          return leftPinned ? -1 : 1;
         }
 
         return (
-          chat.title.toLowerCase().includes(query) ||
-          chat.last_message_preview.toLowerCase().includes(query)
+          new Date(right.updated_at).getTime() -
+          new Date(left.updated_at).getTime()
         );
-      }),
-    [savedChatSearch, savedChats],
+      });
+    },
+    [
+      pinnedSavedChatIdSet,
+      savedChatFilter,
+      savedChatSearch,
+      savedChats,
+    ],
   );
 
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function refreshServiceStatus() {
+      try {
+        const dependencies = await getDependencyStatus();
+        if (!isCancelled) {
+          setDependencyStatus(dependencies);
+          setServiceMode(getServiceMode(dependencies));
+        }
+      } catch {
+        if (!isCancelled) {
+          setDependencyStatus(null);
+          setServiceMode("offline");
+        }
+      }
+    }
+
+    void refreshServiceStatus();
+    const intervalId = window.setInterval(refreshServiceStatus, 30000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  // Apply the selected theme at the document level so every component can use
+  // the same CSS variables.
   useEffect(() => {
     document.documentElement.dataset.theme = displayMode;
     document.documentElement.style.colorScheme = displayMode;
     saveDisplayMode(displayMode);
   }, [displayMode]);
 
+  // Saved chats load on sign-in and when the saved-chat panel opens.
   useEffect(() => {
     if (isSavedChatsOpen && authToken) {
       void refreshSavedChats();
@@ -167,6 +411,8 @@ export default function App() {
     }
   }, [authToken]);
 
+  // Validate remembered tokens against the backend. If the token is stale,
+  // clear it and send the user back to the auth screen.
   useEffect(() => {
     if (!authToken) {
       return;
@@ -207,6 +453,7 @@ export default function App() {
     }
   }, [currentUser]);
 
+  // Admin data is loaded lazily because normal users never need this request.
   useEffect(() => {
     if (settingsTab === "admin" && authToken) {
       void refreshAdminDashboard();
@@ -219,6 +466,8 @@ export default function App() {
     }
   }, [currentUser?.role, settingsTab]);
 
+  // When the active session changes, hydrate the transcript from saved chat
+  // storage if the backend still has it.
   useEffect(() => {
     if (!authToken) {
       return;
@@ -255,6 +504,8 @@ export default function App() {
     };
   }, [authToken, sessionId]);
 
+  // Authentication handlers centralize login/register/dev-login flows and set
+  // the same app state no matter which auth path succeeds.
   async function handleAuthSubmit(
     mode: AuthMode,
     displayName: string,
@@ -393,6 +644,7 @@ export default function App() {
     }
   }
 
+  // Saved-chat summary data drives the sidebar, stats strip, and pin state.
   async function refreshSavedChats(showError = true) {
     if (!authToken) {
       return;
@@ -405,6 +657,11 @@ export default function App() {
         await getSavedConversations(authToken);
       setSavedChats(savedConversationList.conversations);
       setSavedChatsLimit(savedConversationList.max_saved_chats);
+      const pinnedIds = savedConversationList.conversations
+        .filter((conversation) => conversation.pinned)
+        .map((conversation) => conversation.session_id);
+      setPinnedSavedChatIds(pinnedIds);
+      savePinnedSavedChatIds(pinnedIds);
     } catch {
       if (showError) {
         setError(
@@ -432,12 +689,35 @@ export default function App() {
     }
   }
 
+  // Draft helpers keep the composer synced with local storage per session.
+  function updateDraft(nextDraft: string) {
+    setDraftsBySession((currentDrafts) => {
+      const nextDrafts = { ...currentDrafts };
+
+      if (nextDraft) {
+        nextDrafts[sessionId] = nextDraft;
+      } else {
+        delete nextDrafts[sessionId];
+      }
+
+      saveDrafts(nextDrafts);
+      return nextDrafts;
+    });
+  }
+
+  function usePrompt(prompt: string) {
+    updateDraft(prompt);
+    inputRef.current?.focus();
+  }
+
+  // Chat navigation changes the session id and lets the saved-conversation
+  // effect decide whether there is a transcript to load.
   function startNewChat() {
     const nextSessionId = createId();
     saveSessionId(nextSessionId);
     setSessionId(nextSessionId);
     setMessages([]);
-    setDraft("");
+    updateDraft("");
     setError(null);
     setIsSavedChatsOpen(false);
     inputRef.current?.focus();
@@ -446,9 +726,103 @@ export default function App() {
   function openSavedChat(sessionIdToOpen: string) {
     saveSessionId(sessionIdToOpen);
     setSessionId(sessionIdToOpen);
-    setDraft("");
     setError(null);
     setIsSavedChatsOpen(false);
+  }
+
+  async function togglePinnedSavedChat(sessionIdToToggle: string) {
+    if (!authToken) {
+      return;
+    }
+
+    const shouldPin = !pinnedSavedChatIdSet.has(sessionIdToToggle);
+
+    setPinnedSavedChatIds((current) => {
+      const next = current.includes(sessionIdToToggle)
+        ? current.filter((sessionId) => sessionId !== sessionIdToToggle)
+        : [sessionIdToToggle, ...current];
+
+      savePinnedSavedChatIds(next);
+      return next;
+    });
+    setSavedChats((current) =>
+      current.map((chat) =>
+        chat.session_id === sessionIdToToggle
+          ? { ...chat, pinned: shouldPin }
+          : chat,
+      ),
+    );
+
+    try {
+      await updateSavedConversationMetadata(
+        sessionIdToToggle,
+        authToken,
+        { pinned: shouldPin },
+      );
+      await refreshSavedChats(false);
+    } catch (caughtError) {
+      setPinnedSavedChatIds((current) => {
+        const reverted = shouldPin
+          ? current.filter((sessionId) => sessionId !== sessionIdToToggle)
+          : [sessionIdToToggle, ...current];
+        savePinnedSavedChatIds(reverted);
+        return reverted;
+      });
+      setSavedChats((current) =>
+        current.map((chat) =>
+          chat.session_id === sessionIdToToggle
+            ? { ...chat, pinned: !shouldPin }
+            : chat,
+        ),
+      );
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Saved chat could not be updated.",
+      );
+    }
+  }
+
+  // Metadata edits are optimistic for quick UI feedback, then refreshed from
+  // the backend/fallback store so server truth wins.
+  async function renameSavedChat(
+    sessionIdToRename: string,
+    nextTitle: string,
+  ) {
+    if (!authToken) {
+      return;
+    }
+
+    const cleanedTitle = nextTitle.trim();
+    if (!cleanedTitle) {
+      return;
+    }
+
+    setSavedChats((current) =>
+      current.map((chat) =>
+        chat.session_id === sessionIdToRename
+          ? { ...chat, title: cleanedTitle }
+          : chat,
+      ),
+    );
+
+    try {
+      await updateSavedConversationMetadata(
+        sessionIdToRename,
+        authToken,
+        { title: cleanedTitle },
+      );
+      await refreshSavedChats(false);
+      setStatusMessage("Saved chat renamed.");
+      window.setTimeout(() => setStatusMessage(null), 1800);
+    } catch (caughtError) {
+      await refreshSavedChats(false);
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Saved chat could not be renamed.",
+      );
+    }
   }
 
   async function deleteSavedChat(sessionIdToDelete: string) {
@@ -469,6 +843,8 @@ export default function App() {
     }
   }
 
+  // Main chat submit pipeline: optimistic user message, backend safety/chat
+  // call, assistant message append, then saved-chat sidebar refresh.
   async function submitMessage(
     rawMessage: string,
     options: {
@@ -502,7 +878,7 @@ export default function App() {
         },
       ]);
     }
-    setDraft("");
+    updateDraft("");
     setError(null);
     setIsSending(true);
 
@@ -614,7 +990,7 @@ export default function App() {
   async function clearConversation() {
     setMessages([]);
     setError(null);
-    setDraft("");
+    updateDraft("");
     inputRef.current?.focus();
 
     if (!authToken) {
@@ -631,6 +1007,8 @@ export default function App() {
     }
   }
 
+  // Account privacy actions live here because they need the current filters,
+  // current session id, and authenticated token.
   async function exportSavedChats() {
     if (!authToken) {
       return;
@@ -714,13 +1092,15 @@ export default function App() {
     setCurrentUser(null);
     setMessages([]);
     setSavedChats([]);
-    setDraft("");
+    updateDraft("");
     setError(null);
     setIsSettingsOpen(false);
     setIsSavedChatsOpen(false);
     startNewChat();
   }
 
+  // Unauthenticated users see only the auth panel. All app features below this
+  // point assume there is a current user and bearer token.
   if (!authToken || !currentUser) {
     return (
       <AuthPanel
@@ -739,6 +1119,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <div className="chat-layout">
+        {/* Desktop saved-chat navigation. Mobile uses the collapsible panel. */}
         <SavedChatsSidebar
           chats={filteredSavedChats}
           activeSessionId={sessionId}
@@ -746,6 +1127,15 @@ export default function App() {
           savedChatsLimit={savedChatsLimit}
           search={savedChatSearch}
           onSearchChange={setSavedChatSearch}
+          filter={savedChatFilter}
+          onFilterChange={setSavedChatFilter}
+          pinnedChatIds={pinnedSavedChatIds}
+          onTogglePinnedChat={(sessionIdToToggle) =>
+            void togglePinnedSavedChat(sessionIdToToggle)
+          }
+          onRenameChat={(sessionIdToRename, nextTitle) =>
+            void renameSavedChat(sessionIdToRename, nextTitle)
+          }
           onOpenChat={openSavedChat}
           onDeleteChat={(sessionIdToDelete) =>
             void deleteSavedChat(sessionIdToDelete)
@@ -756,6 +1146,7 @@ export default function App() {
         />
 
         <section className="chat-card">
+        {/* Top-level app controls and service health chip. */}
         <header className="app-header">
           <div>
             <p className="eyebrow">Safety-aware AI demo</p>
@@ -766,6 +1157,20 @@ export default function App() {
                 <span className="role-chip">Admin</span>
               )}
             </p>
+            <div
+              className={`service-mode service-mode-${serviceMode}`}
+              title={getServiceModeDetail(serviceMode)}
+            >
+              <span aria-hidden="true" />
+              <strong>{getServiceModeLabel(serviceMode)}</strong>
+              {dependencyStatus && (
+                <small>
+                  Safety {dependencyStatus.safety_service} / Chat{" "}
+                  {dependencyStatus.chat_service} / Save{" "}
+                  {dependencyStatus.save_service}
+                </small>
+              )}
+            </div>
           </div>
 
           <div className="header-actions">
@@ -813,6 +1218,7 @@ export default function App() {
           </div>
         </header>
 
+        {/* Mobile saved-chat drawer, rendered only when toggled open. */}
         {isSavedChatsOpen && (
           <SavedChatsPanel
             chats={filteredSavedChats}
@@ -821,6 +1227,15 @@ export default function App() {
             savedChatsLimit={savedChatsLimit}
             search={savedChatSearch}
             onSearchChange={setSavedChatSearch}
+            filter={savedChatFilter}
+            onFilterChange={setSavedChatFilter}
+            pinnedChatIds={pinnedSavedChatIds}
+            onTogglePinnedChat={(sessionIdToToggle) =>
+              void togglePinnedSavedChat(sessionIdToToggle)
+            }
+            onRenameChat={(sessionIdToRename, nextTitle) =>
+              void renameSavedChat(sessionIdToRename, nextTitle)
+            }
             onOpenChat={openSavedChat}
             onDeleteChat={(sessionIdToDelete) =>
               void deleteSavedChat(sessionIdToDelete)
@@ -832,6 +1247,7 @@ export default function App() {
           />
         )}
 
+        {/* Settings is kept in the page flow so it works on desktop and mobile. */}
         {isSettingsOpen && (
           <SettingsPanel
             activeTab={settingsTab}
@@ -865,6 +1281,7 @@ export default function App() {
           />
         )}
 
+        {/* High-risk assistant replies surface crisis resources above the chat. */}
         {hasCrisisRisk && (
           <section className="crisis-panel" role="alert">
             <div>
@@ -902,6 +1319,78 @@ export default function App() {
           saved to your account for up to 10 days.
         </div>
 
+        {/* Quick readout for the current conversation and saved-chat capacity. */}
+        <section className="conversation-strip" aria-label="Conversation summary">
+          <div>
+            <span>Messages</span>
+            <strong>{messages.length}</strong>
+            <small>
+              {userMessageCount} you / {assistantMessageCount} guide
+            </small>
+          </div>
+          <div>
+            <span>Saved chats</span>
+            <strong>
+              {savedChats.length}/{savedChatsLimit}
+            </strong>
+            <small>{savedChatsLimit - savedChats.length} slots open</small>
+          </div>
+          <div>
+            <span>Retention</span>
+            <strong>
+              {activeSavedChat
+                ? `${Math.max(getDaysUntilExpiration(activeSavedChat), 0)}d`
+                : "10d"}
+            </strong>
+            <small>
+              {activeSavedChat ? "until this chat expires" : "after saving"}
+            </small>
+          </div>
+          <div>
+            <span>Draft</span>
+            <strong>{draft ? "Saved" : "Empty"}</strong>
+            <small>{draft.length}/4000 characters</small>
+          </div>
+        </section>
+
+        {/* Fast drafting buttons for common support workflows. */}
+        <section className="support-tools" aria-label="Quick support tools">
+          <button
+            type="button"
+            onClick={() =>
+              usePrompt(
+                "Guide me through a 60-second grounding exercise I can do right now.",
+              )
+            }
+            disabled={isSending}
+          >
+            60-second grounding
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              usePrompt(
+                "Help me make a tiny next-step plan for the next ten minutes.",
+              )
+            }
+            disabled={isSending}
+          >
+            Next-step plan
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              usePrompt(
+                "Help me rewrite this in a calmer and clearer way: ",
+              )
+            }
+            disabled={isSending}
+          >
+            Calm rewrite
+          </button>
+        </section>
+
+        {/* Transcript area. Empty chats show categorized starter prompts. */}
         <div
           className="messages"
           aria-live="polite"
@@ -911,16 +1400,43 @@ export default function App() {
             <div className="empty-state">
               <h2>What would help right now?</h2>
               <p>
-                Choose a prompt or write your own message below.
+                Choose a prompt, adjust it if you want, then send.
               </p>
 
+              <div
+                className="prompt-tabs"
+                role="tablist"
+                aria-label="Prompt categories"
+              >
+                {starterPrompts.map((promptGroup) => (
+                  <button
+                    key={promptGroup.category}
+                    type="button"
+                    role="tab"
+                    className={
+                      activePromptCategory === promptGroup.category
+                        ? "active"
+                        : undefined
+                    }
+                    aria-selected={
+                      activePromptCategory === promptGroup.category
+                    }
+                    onClick={() =>
+                      setActivePromptCategory(promptGroup.category)
+                    }
+                  >
+                    {promptGroup.category}
+                  </button>
+                ))}
+              </div>
+
               <div className="prompt-grid">
-                {starterPrompts.map((prompt) => (
+                {activePromptGroup.prompts.map((prompt) => (
                   <button
                     key={prompt}
                     type="button"
                     className="prompt-button"
-                    onClick={() => void submitMessage(prompt)}
+                    onClick={() => usePrompt(prompt)}
                     disabled={isSending}
                   >
                     {prompt}
@@ -1004,7 +1520,9 @@ export default function App() {
           {isSending && (
             <article className="message assistant loading-message">
               <strong>Guide</strong>
-              <p>Thinking carefully...</p>
+              <p>
+                Checking safety, drafting a response, and saving the turn...
+              </p>
             </article>
           )}
         </div>
@@ -1021,6 +1539,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Composer owns the current session draft and submit shortcut. */}
         <form className="composer" onSubmit={handleSubmit}>
           <label htmlFor="message">Your message</label>
 
@@ -1028,7 +1547,7 @@ export default function App() {
             ref={inputRef}
             id="message"
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => updateDraft(event.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Write what is happening or ask for a coping strategy..."
             maxLength={4000}

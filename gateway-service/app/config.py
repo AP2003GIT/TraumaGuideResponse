@@ -9,6 +9,7 @@ DEFAULT_SAVE_SERVICE_URL = "http://127.0.0.1:8003"
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
     app_name: str = "Emotional Support Gateway"
     safety_service_url: str = DEFAULT_SAFETY_SERVICE_URL
     chat_service_url: str = DEFAULT_CHAT_SERVICE_URL
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     chat_rate_limit_per_minute: int = 20
     admin_rate_limit_per_minute: int = 30
     single_service_fallback: bool = True
+    fallback_data_path: str = "local-demo-data.json"
     chat_retention_days: int = 10
     chat_max_saved_chats: int = 10
     admin_emails: list[str] = []
